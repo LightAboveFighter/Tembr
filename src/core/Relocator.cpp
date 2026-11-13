@@ -94,6 +94,24 @@ QString find(const Track &t, const Index &index)
     return {};   // still ambiguous
 }
 
+int relocateMissing(TrackList &tracks, const Index &index, QList<QPair<QString, QString>> *moves)
+{
+    int n = 0;
+    for (Track &t : tracks) {
+        if (!t.missing || t.isUrl())
+            continue;
+        const QString found = find(t, index);
+        if (found.isEmpty())
+            continue;
+        if (moves)
+            moves->append({t.path, found});
+        t.path = found;
+        t.missing = false;
+        ++n;
+    }
+    return n;
+}
+
 QList<PathResolver::Remap> deriveRemaps(const QList<QPair<QString, QString>> &moves)
 {
     QMap<PathResolver::Remap, int> counts;

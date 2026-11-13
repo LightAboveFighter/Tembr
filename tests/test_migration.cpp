@@ -195,7 +195,7 @@ private slots:
         QCOMPARE(data.name, QStringLiteral("Mix"));
         QCOMPARE(data.tracks.size(), 4);
         QCOMPARE(data.tracks[0].path, library.filePath(QStringLiteral("Rock/known.mp3")));   // matched, not copied
-        QCOMPARE(data.tracks[1].path, copyTo.filePath(QStringLiteral("Music/only-on-phone.mp3")));
+        QCOMPARE(data.tracks[1].path, copyTo.filePath(QStringLiteral("only-on-phone.mp3")));   // no Music/Music
         QFile copied(data.tracks[1].path);
         QVERIFY(copied.open(QIODevice::ReadOnly));
         QCOMPARE(copied.readAll(), QByteArray("PHONE-ONLY"));
@@ -293,8 +293,8 @@ private slots:
         QVERIFY2(Migration::importPhonePlaylist(*phone, files[0], opt, data, stats, {}, &error), qPrintable(error));
         QCOMPARE(data.name, QStringLiteral("Best"));
         QCOMPARE(stats.copied, 2);
-        QCOMPARE(data.tracks[0].path, copyTo.filePath(QStringLiteral("Music/It's mine.mp3")));
-        QCOMPARE(data.tracks[1].path, copyTo.filePath(QStringLiteral("Music/sd.mp3")));
+        QCOMPARE(data.tracks[0].path, copyTo.filePath(QStringLiteral("It's mine.mp3")));
+        QCOMPARE(data.tracks[1].path, copyTo.filePath(QStringLiteral("sd.mp3")));
         QFile sd(data.tracks[1].path);
         QVERIFY(sd.open(QIODevice::ReadOnly));
         QCOMPARE(sd.readAll(), QByteArray("sd card song"));

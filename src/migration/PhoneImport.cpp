@@ -38,6 +38,15 @@ bool mapAbsolute(const QString &path, const QList<PhoneStorage> &storages, Phone
     return false;
 }
 
+// The phone's folder layout is kept, minus the top "Music/": copying into
+// ~/Music should not give ~/Music/Music/...
+QString copyTarget(const QString &rel)
+{
+    if (rel.startsWith(QLatin1String("Music/"), Qt::CaseInsensitive))
+        return rel.mid(6);
+    return rel;
+}
+
 } // namespace
 
 PhoneImportStats &PhoneImportStats::operator+=(const PhoneImportStats &o)
@@ -158,7 +167,7 @@ bool importPhonePlaylist(PhoneSource &source, const PhonePlaylistFile &file, con
         }
         // 2) Copy it from the phone.
         if (localPath.isEmpty() && !options.copyMissingTo.isEmpty()) {
-            const QString dest = QDir(options.copyMissingTo).filePath(ref.rel);
+            const QString dest = QDir(options.copyMissingTo).filePath(copyTarget(ref.rel));
             if (QFileInfo(dest).size() > 0) {
                 localPath = dest;   // copied before (same file in another playlist)
                 ++local.copied;

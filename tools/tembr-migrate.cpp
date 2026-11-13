@@ -156,19 +156,7 @@ int runAimp(const Args &a)
             out(QStringLiteral("  %1: %2").arg(info.name, error));
             continue;
         }
-        int relocated = 0;
-        if (library.files > 0) {
-            for (Track &t : data.tracks) {
-                if (!t.missing || t.isUrl())
-                    continue;
-                const QString found = Relocator::find(t, library);
-                if (!found.isEmpty()) {
-                    t.path = found;
-                    t.missing = false;
-                    ++relocated;
-                }
-            }
-        }
+        const int relocated = library.files > 0 ? Relocator::relocateMissing(data.tracks, library) : 0;
         const int ok = int(std::count_if(data.tracks.cbegin(), data.tracks.cend(), [](const Track &t) { return !t.missing; }));
         total += int(data.tracks.size());
         found += ok;

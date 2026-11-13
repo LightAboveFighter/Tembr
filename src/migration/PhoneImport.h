@@ -27,7 +27,9 @@ PhoneRef mapPhoneEntry(const QString &entry, const QList<PhoneStorage> &storages
 struct PhoneImportOptions
 {
     const Relocator::Index *library = nullptr;   // music on this computer, matched by file name (and size)
-    QString copyMissingTo;                       // copy tracks not found locally into this folder; empty = don't
+    // Copy tracks not found locally into this folder (empty = don't), keeping
+    // the phone's folders below its top "Music/" folder.
+    QString copyMissingTo;
 };
 
 struct PhoneImportStats
