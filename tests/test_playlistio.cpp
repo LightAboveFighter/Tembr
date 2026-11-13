@@ -264,6 +264,36 @@ private slots:
         QVERIFY(back.tracks[0].missing);              // the file doesn't exist
     }
 
+    void xspfRelativePercentEncoded()
+    {
+        const QByteArray xml =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<playlist version=\"1\" xmlns=\"http://xspf.org/ns/0/\">"
+            "<title>Phone</title><trackList>"
+            "<track><location>../Music/%D0%9A%D0%B8%D0%BD%D0%BE/My%20Song.mp3</location></track>"
+            "<track><location>file:///storage/emulated/0/Music/a%20b.mp3</location></track>"
+            "</trackList></playlist>";
+        const TrackList t = PlaylistIO::parseXspf(xml, QStringLiteral("/phone/Playlists"));
+        QCOMPARE(t.size(), 2);
+        QCOMPARE(t[0].path, QStringLiteral("/phone/Music/Кино/My Song.mp3"));
+        QCOMPARE(t[1].path, QStringLiteral("/storage/emulated/0/Music/a b.mp3"));
+    }
+
+    void customEntryResolver()
+    {
+        QStringList seen;
+        const auto resolve = [&](const QString &e) {
+            seen << e;
+            return QStringLiteral("mapped:") + e;
+        };
+        QString name;
+        const TrackList t = PlaylistIO::parse("#EXTM3U\n#PLAYLIST:P\nMusic/a.mp3\n/sdcard/b.mp3\n", QStringLiteral("M3U8"),
+                                              resolve, &name);
+        QCOMPARE(name, QStringLiteral("P"));
+        QCOMPARE(seen, (QStringList{QStringLiteral("Music/a.mp3"), QStringLiteral("/sdcard/b.mp3")}));
+        QCOMPARE(t[1].path, QStringLiteral("mapped:/sdcard/b.mp3"));
+        QVERIFY(PlaylistIO::parse("x", QStringLiteral("cue"), resolve).isEmpty());
+    }
+
     void xspfRoundTripKeepsEverything()
     {
         QTemporaryDir dir;

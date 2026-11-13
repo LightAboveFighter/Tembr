@@ -5,6 +5,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 struct PlaylistData
 {
     QString name;
@@ -30,11 +32,23 @@ bool save(const QString &file, const PlaylistData &data, QString *error = nullpt
 // Parses a CUE sheet into virtual tracks.
 TrackList loadCue(const QString &cueFile, QString *albumTitle = nullptr);
 
+// Maps a raw playlist entry to the path stored in the Track. The default
+// (PathResolver) makes local paths; migration uses its own for phone paths.
+using EntryResolver = std::function<QString(const QString &entry)>;
+
+// Parses playlist data of `format` ("m3u8", "xspf", ...; not "cue") with a
+// custom path mapping. Unknown formats give an empty list.
+TrackList parse(const QByteArray &data, const QString &format, const EntryResolver &resolve, QString *name = nullptr);
+
 // Format-specific parsers, exposed for tests. `baseDir` resolves relative paths.
 TrackList parseM3u(const QString &text, const QString &baseDir, QString *name = nullptr);
 TrackList parsePls(const QString &text, const QString &baseDir);
 TrackList parseXspf(const QByteArray &xml, const QString &baseDir, QString *name = nullptr);
 TrackList parseAimppl4(const QString &text, const QString &baseDir, QString *name = nullptr);
+TrackList parseM3u(const QString &text, const EntryResolver &resolve, QString *name = nullptr);
+TrackList parsePls(const QString &text, const EntryResolver &resolve);
+TrackList parseXspf(const QByteArray &xml, const EntryResolver &resolve, QString *name = nullptr);
+TrackList parseAimppl4(const QString &text, const EntryResolver &resolve, QString *name = nullptr);
 TrackList parseCue(const QString &text, const QString &cueFile, QString *albumTitle = nullptr);
 
 } // namespace PlaylistIO
