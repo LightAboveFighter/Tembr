@@ -38,6 +38,8 @@ add_library(tembr_core STATIC
     src/platform/Mpris.h src/platform/Mpris.cpp
     src/platform/GlobalHotkeys.h src/platform/GlobalHotkeys.cpp
     src/migration/AimpProfiles.h src/migration/AimpProfiles.cpp
+    src/migration/PhoneSources.h src/migration/PhoneSources.cpp
+    src/migration/PhoneImport.h src/migration/PhoneImport.cpp
 )
 target_include_directories(tembr_core PUBLIC src)
 target_link_libraries(tembr_core PUBLIC Qt6::Core Qt6::Gui Qt6::Concurrent Qt6::DBus PkgConfig::FFMPEG miniaudio)

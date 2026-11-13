@@ -1,9 +1,13 @@
 #include "migration/AimpProfiles.h"
+#include "migration/PhoneImport.h"
+#include "migration/PhoneSources.h"
 
 #include <QDir>
 #include <QFile>
 #include <QTemporaryDir>
 #include <QTest>
+
+#include <algorithm>
 
 namespace {
 
@@ -14,6 +18,14 @@ void writeUtf16(const QString &path, const QString &text)
     QVERIFY(f.open(QIODevice::WriteOnly));
     f.write("\xFF\xFE", 2);
     f.write(reinterpret_cast<const char *>(text.utf16()), text.size() * 2);
+}
+
+void writeFile(const QString &path, const QByteArray &data)
+{
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write(data);
 }
 
 QString aimpPlaylist(const QString &name, const QString &id, const QStringList &paths, int cursor = -1)
@@ -113,6 +125,180 @@ private slots:
         QCOMPARE(QFileInfo(s.playlists[0].file).fileName(), QStringLiteral("SD.aimppl4"));
         QVERIFY(s.playlists[0].open);
         QVERIFY(!s.playlists[1].open);
+    }
+
+    void phoneEntries()
+    {
+        using Migration::PhoneRef;
+        const QList<Migration::PhoneStorage> st = {
+            {QStringLiteral("primary"), QStringLiteral("Internal"), QStringLiteral("/sdcard"), true},
+            {QStringLiteral("1234-ABCD"), QStringLiteral("SD"), QStringLiteral("/storage/1234-ABCD"), false},
+        };
+        auto map = [&](const QString &e) { return Migration::mapPhoneEntry(e, st, 0, QStringLiteral("Music/Playlists ")); };
+
+        PhoneRef r = map(QStringLiteral("/storage/emulated/0/Music/Кино - Звезда.mp3"));
+        QCOMPARE(r.storage, 0);
+        QCOMPARE(r.rel, QStringLiteral("Music/Кино - Звезда.mp3"));
+        QCOMPARE(map(QStringLiteral("/sdcard/Music/a.mp3")).rel, QStringLiteral("Music/a.mp3"));
+        r = map(QStringLiteral("/storage/1234-abcd/Music/b.mp3"));
+        QCOMPARE(r.storage, 1);
+        QCOMPARE(r.rel, QStringLiteral("Music/b.mp3"));
+        r = map(QStringLiteral("../a.mp3"));                       // relative to "Music/Playlists "
+        QCOMPARE(r.storage, 0);
+        QCOMPARE(r.rel, QStringLiteral("Music/a.mp3"));
+        r = map(QStringLiteral("content://com.android.externalstorage.documents/document/1234-ABCD%3AMusic%2Fc.mp3"));
+        QCOMPARE(r.storage, 1);
+        QCOMPARE(r.rel, QStringLiteral("Music/c.mp3"));
+        QCOMPARE(map(QStringLiteral("content://media/external/audio/media/42")).kind, PhoneRef::Unmappable);
+        QCOMPARE(map(QStringLiteral("https://radio.example/stream")).kind, PhoneRef::Url);
+        QCOMPARE(map(QStringLiteral("file:///storage/emulated/0/Music/d%20e.mp3")).rel, QStringLiteral("Music/d e.mp3"));
+    }
+
+    // A phone (or its copy) as a folder: playlist in "Music/Playlists " (with the
+    // trailing space seen on a real phone), absolute and relative entries.
+    void importFromPhoneFolder()
+    {
+        QTemporaryDir phone, library, copyTo;
+        writeFile(phone.filePath(QStringLiteral("Music/known.mp3")), "phone copy");
+        writeFile(phone.filePath(QStringLiteral("Music/only-on-phone.mp3")), "PHONE-ONLY");
+        writeFile(phone.filePath(QStringLiteral("Music/Playlists /Mix.m3u8")),
+                  "#EXTM3U\n#EXTINF:10,A - Known\n/storage/emulated/0/Music/known.mp3\n"
+                  "#EXTINF:20,B - Only\n../only-on-phone.mp3\n"
+                  "/storage/emulated/0/Music/gone.mp3\nhttp://radio.example/live\n");
+        writeFile(phone.filePath(QStringLiteral("Android/data/com.other/cache/hls.m3u8")), "#EXTM3U\n");
+        writeFile(phone.filePath(QStringLiteral("Android/data/com.aimp.player/files/Exported.xspf")),
+                  "<playlist xmlns=\"http://xspf.org/ns/0/\"><trackList><track><location>../../../../Music/known.mp3"
+                  "</location></track></trackList></playlist>");
+        writeFile(phone.filePath(QStringLiteral("DCIM/x.m3u")), "#EXTM3U\n");
+        writeFile(library.filePath(QStringLiteral("Rock/known.mp3")), "pc copy");
+
+        const auto source = Migration::folderSource(phone.path());
+        QList<Migration::PhonePlaylistFile> files = source->findPlaylists();
+        QStringList paths;
+        for (const auto &f : files)
+            paths << f.path;
+        paths.sort();
+        QCOMPARE(paths, (QStringList{QStringLiteral("Android/data/com.aimp.player/files/Exported.xspf"),
+                                     QStringLiteral("Music/Playlists /Mix.m3u8")}));
+
+        const Relocator::Index index = Relocator::build(library.path());
+        Migration::PhoneImportOptions opt;
+        opt.library = &index;
+        opt.copyMissingTo = copyTo.path();
+        const auto mix = std::find_if(files.cbegin(), files.cend(),
+                                      [](const auto &f) { return f.path.endsWith(QLatin1String("Mix.m3u8")); });
+        PlaylistData data;
+        Migration::PhoneImportStats stats;
+        int lastDone = -1;
+        QVERIFY(Migration::importPhonePlaylist(*source, *mix, opt, data, stats,
+                                               [&](int done, int, const QString &) { lastDone = done; return true; }));
+        QCOMPARE(data.name, QStringLiteral("Mix"));
+        QCOMPARE(data.tracks.size(), 4);
+        QCOMPARE(data.tracks[0].path, library.filePath(QStringLiteral("Rock/known.mp3")));   // matched, not copied
+        QCOMPARE(data.tracks[1].path, copyTo.filePath(QStringLiteral("Music/only-on-phone.mp3")));
+        QFile copied(data.tracks[1].path);
+        QVERIFY(copied.open(QIODevice::ReadOnly));
+        QCOMPARE(copied.readAll(), QByteArray("PHONE-ONLY"));
+        QVERIFY(data.tracks[2].missing);
+        QCOMPARE(data.tracks[2].path, QStringLiteral("/sdcard/Music/gone.mp3"));
+        QCOMPARE(data.tracks[3].path, QStringLiteral("http://radio.example/live"));
+        QCOMPARE(stats.matched, 1);
+        QCOMPARE(stats.copied, 1);
+        QCOMPARE(stats.missing, 1);
+        QCOMPARE(stats.streams, 1);
+        QCOMPARE(lastDone, 4);
+
+        // Cancelling stops the import.
+        PlaylistData cancelled;
+        Migration::PhoneImportStats st2;
+        QVERIFY(!Migration::importPhonePlaylist(*source, *mix, opt, cancelled, st2,
+                                                [](int, int, const QString &) { return false; }));
+    }
+
+    void gvfsMtpMounts()
+    {
+        QTemporaryDir gvfs;
+        QDir().mkpath(gvfs.filePath(QStringLiteral("mtp:host=Xiaomi_Redmi_Note_13_Pro_5G_4c311b75/Внутренний общий накопитель")));
+        QDir().mkpath(gvfs.filePath(QStringLiteral("mtp:host=Locked_Phone_1")));
+        QDir().mkpath(gvfs.filePath(QStringLiteral("smb-share:server=nas")));
+        QStringList notes;
+        const auto sources = Migration::mtpSources(gvfs.path(), &notes);
+        QCOMPARE(sources.size(), 1);
+        QCOMPARE(sources[0]->kind(), Migration::PhoneSource::Kind::Mtp);
+        QVERIFY(sources[0]->label().startsWith(QStringLiteral("Xiaomi Redmi Note 13 Pro 5G")));
+        QVERIFY(sources[0]->storages().first().primary);
+        QCOMPARE(notes.size(), 1);
+        QVERIFY(notes.first().startsWith(QStringLiteral("Locked Phone 1")));
+    }
+
+    // ADB through a fake `adb` that runs the commands on a local copy of the
+    // phone: checks command lines and shell quoting, not just parsing.
+    void adbPhone()
+    {
+        QTemporaryDir root, copyTo;
+        writeFile(root.filePath(QStringLiteral("sdcard/Music/It's mine.mp3")), "song");
+        writeFile(root.filePath(QStringLiteral("sdcard/Music/Playlists/Best.xspf")),
+                  "<playlist xmlns=\"http://xspf.org/ns/0/\"><title>Best</title><trackList>"
+                  "<track><location>../It's%20mine.mp3</location></track>"
+                  "<track><location>/storage/1234-ABCD/Music/sd.mp3</location></track>"
+                  "</trackList></playlist>");
+        writeFile(root.filePath(QStringLiteral("sdcard/Android/data/com.google.chrome/x.m3u8")), "#EXTM3U\n");
+        writeFile(root.filePath(QStringLiteral("storage/1234-ABCD/Music/sd.mp3")), "sd card song");
+        QDir().mkpath(root.filePath(QStringLiteral("storage/emulated")));
+
+        const QString adb = root.filePath(QStringLiteral("fake-adb"));
+        // (no raw string: moc would read the "#!" line as a directive)
+        writeFile(adb,
+                  "#!/bin/sh\n"
+                  "ROOT=\"$FAKE_PHONE_ROOT\"\n"
+                  "if [ \"$1\" = \"devices\" ]; then\n"
+                  "  printf 'List of devices attached\\nSER123         device usb:1-1 product:x model:Pixel_7 device:panther\\nBAD456  unauthorized usb:1-2\\n\\n'\n"
+                  "  exit 0\n"
+                  "fi\n"
+                  "[ \"$1\" = \"-s\" ] && shift 2\n"
+                  "cmd=\"$1\"; shift\n"
+                  "map() { printf '%s' \"$1\" | sed \"s#/sdcard#$ROOT/sdcard#g; s#/storage/#$ROOT/storage/#g; s#^ls /storage\\$#ls $ROOT/storage#\"; }\n"
+                  "case \"$cmd\" in\n"
+                  "  shell) sh -c \"$(map \"$1\")\" | sed \"s#$ROOT##g\" ;;\n"
+                  "  exec-out) sh -c \"$(map \"$1\")\" ;;\n"
+                  "  pull) cp \"$(map \"$1\")\" \"$2\" ;;\n"
+                  "esac\n"
+                  "\n");
+        QFile(adb).setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        qputenv("TEMBR_ADB", adb.toUtf8());
+        qputenv("FAKE_PHONE_ROOT", root.path().toUtf8());
+
+        // (a real phone over MTP may be listed too; take the ADB one)
+        const Migration::PhoneDiscovery d = Migration::discoverPhones();
+        Migration::PhoneSourcePtr phone;
+        for (const auto &s : d.sources) {
+            if (s->kind() == Migration::PhoneSource::Kind::Adb)
+                phone = s;
+        }
+        QVERIFY(phone);
+        QVERIFY(phone->label().startsWith(QStringLiteral("Pixel 7")));
+        QVERIFY(std::any_of(d.notes.cbegin(), d.notes.cend(), [](const QString &n) { return n.startsWith(QStringLiteral("BAD456")); }));
+        QCOMPARE(phone->storages().size(), 2);
+        QCOMPARE(phone->storages()[1].key, QStringLiteral("1234-ABCD"));
+
+        const auto files = phone->findPlaylists();
+        QCOMPARE(files.size(), 1);   // Android/ skipped
+        QCOMPARE(files[0].path, QStringLiteral("Music/Playlists/Best.xspf"));
+
+        Migration::PhoneImportOptions opt;
+        opt.copyMissingTo = copyTo.path();
+        PlaylistData data;
+        Migration::PhoneImportStats stats;
+        QString error;
+        QVERIFY2(Migration::importPhonePlaylist(*phone, files[0], opt, data, stats, {}, &error), qPrintable(error));
+        QCOMPARE(data.name, QStringLiteral("Best"));
+        QCOMPARE(stats.copied, 2);
+        QCOMPARE(data.tracks[0].path, copyTo.filePath(QStringLiteral("Music/It's mine.mp3")));
+        QCOMPARE(data.tracks[1].path, copyTo.filePath(QStringLiteral("Music/sd.mp3")));
+        QFile sd(data.tracks[1].path);
+        QVERIFY(sd.open(QIODevice::ReadOnly));
+        QCOMPARE(sd.readAll(), QByteArray("sd card song"));
+        qunsetenv("TEMBR_ADB");
     }
 };
 
