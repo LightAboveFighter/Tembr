@@ -12,14 +12,23 @@ namespace Relocator {
 
 struct Index
 {
+    static constexpr int kSuffixDirs = 3;
+
     QHash<QString, QStringList> byName;   // lower-case file name -> full paths
+    // bySuffix[k-1]: "album/01 - intro.mp3" (k = 1), "artist/album/01 - intro.mp3" (k = 2), ...
+    // used to tell apart files with the same name in different folders.
+    QHash<QString, QStringList> bySuffix[kSuffixDirs];
     int files = 0;
 };
 
-Index build(const QString &root);   // blocking, run off the GUI thread
+// Indexes audio files under the folders (blocking: run off the GUI thread).
+Index build(const QString &root);
+Index build(const QStringList &roots);
 
-// New location of a missing track, or an empty string. With several files of
-// the same name, prefers the same size, then the same parent folder name.
+// New location of a missing track, or an empty string. Several files with
+// the same name are narrowed down by the folders the track was in (album,
+// then artist, ...), then by file size and exact letter case. If it is still
+// ambiguous nothing is returned: a wrong song is worse than a missing one.
 QString find(const Track &t, const Index &index);
 
 // Folder-level moves (old folder -> new folder), most frequent first.

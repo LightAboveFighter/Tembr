@@ -1017,7 +1017,7 @@ void MainWindow::findMovedFiles()
                                      .arg(moves.size())
                                      .arg(missing));
     });
-    watcher->setFuture(QtConcurrent::run(&Relocator::build, folder));
+    watcher->setFuture(QtConcurrent::run([folder] { return Relocator::build(folder); }));
 }
 
 void MainWindow::savePlaylist()

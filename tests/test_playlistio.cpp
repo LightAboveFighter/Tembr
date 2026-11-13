@@ -145,6 +145,40 @@ private slots:
         QCOMPARE(t[2].trackNo, 3);
     }
 
+    // Many albums have "01 - Intro.mp3": the folders decide, never a guess.
+    void relocateAmbiguousNames()
+    {
+        QTemporaryDir lib;
+        auto make = [&](const QString &rel, int size) {
+            const QString p = lib.filePath(rel);
+            QDir().mkpath(QFileInfo(p).absolutePath());
+            QFile f(p);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(QByteArray(size, 'x'));
+        };
+        make(QStringLiteral("A/Album1/01 - Intro.mp3"), 10);
+        make(QStringLiteral("B/Album1/01 - Intro.mp3"), 20);
+        make(QStringLiteral("B/Album2/01 - Intro.mp3"), 30);
+        make(QStringLiteral("C/Bones.mp3"), 40);
+        make(QStringLiteral("C/bones.mp3"), 50);
+        make(QStringLiteral("D/unique.mp3"), 1);
+        const Relocator::Index idx = Relocator::build(lib.path());
+        QCOMPARE(idx.files, 6);
+        auto find = [&](const QString &path, qint64 size = 0) {
+            Track t = Track::fromPath(path);
+            t.fileSize = size;
+            const QString found = Relocator::find(t, idx);
+            return found.isEmpty() ? QString() : found.mid(lib.path().size() + 1);
+        };
+        QCOMPARE(find(QStringLiteral("/old/B/Album1/01 - Intro.mp3")), QStringLiteral("B/Album1/01 - Intro.mp3"));
+        QCOMPARE(find(QStringLiteral("/old/X/Album2/01 - Intro.mp3")), QStringLiteral("B/Album2/01 - Intro.mp3"));
+        QCOMPARE(find(QStringLiteral("/old/Z/Album9/01 - Intro.mp3")), QString());   // ambiguous: left missing
+        QCOMPARE(find(QStringLiteral("/old/Z/Album9/01 - Intro.mp3"), 10), QStringLiteral("A/Album1/01 - Intro.mp3"));
+        QCOMPARE(find(QStringLiteral("/old/C/bones.mp3")), QStringLiteral("C/bones.mp3"));          // exact case
+        QCOMPARE(find(QStringLiteral("/elsewhere/unique.mp3")), QStringLiteral("D/unique.mp3"));
+        QCOMPARE(find(QStringLiteral("/old/none.mp3")), QString());
+    }
+
     void aimppl4()
     {
         // Lines as written by AIMP 5 under Wine (fields shortened to the known ones).
