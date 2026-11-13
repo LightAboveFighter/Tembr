@@ -148,7 +148,7 @@ void PlaylistPage::addPaths(const QStringList &paths, int sourceRow, bool playFi
         if (!tracks.isEmpty())
             emit tracksAdded(row, playFirst);
     });
-    watcher->setFuture(QtConcurrent::run(&MediaCollector::collect, paths));
+    watcher->setFuture(QtConcurrent::run([paths] { return MediaCollector::collect(paths); }));
 }
 
 QList<int> PlaylistPage::selectedSourceRows() const

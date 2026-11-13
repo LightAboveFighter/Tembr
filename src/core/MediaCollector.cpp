@@ -23,12 +23,26 @@ void sortNatural(QFileInfoList &list)
     });
 }
 
-void collectDir(const QString &dirPath, TrackList &out, QSet<QString> &visited)
+bool isExcluded(const QString &dir, const QStringList &excluded)
+{
+    for (const QString &e : excluded) {
+        if (dir == e || dir.startsWith(e + QLatin1Char('/')))
+            return true;
+    }
+    return false;
+}
+
+void collectDir(const QString &dirPath, TrackList &out, QSet<QString> &visited, const QStringList &excluded,
+                QStringList *visitedDirs)
 {
     const QString canonical = QFileInfo(dirPath).canonicalFilePath();
     if (canonical.isEmpty() || visited.contains(canonical))
         return;   // symlink loop
+    if (isExcluded(QFileInfo(dirPath).absoluteFilePath(), excluded) || isExcluded(canonical, excluded))
+        return;
     visited.insert(canonical);
+    if (visitedDirs)
+        visitedDirs->append(QFileInfo(dirPath).absoluteFilePath());
 
     const QDir dir(dirPath);
     QFileInfoList files = dir.entryInfoList(QDir::Files | QDir::Readable);
@@ -54,7 +68,7 @@ void collectDir(const QString &dirPath, TrackList &out, QSet<QString> &visited)
             out.append(Track::fromPath(fi.absoluteFilePath()));
     }
     for (const QFileInfo &fi : std::as_const(subdirs))
-        collectDir(fi.absoluteFilePath(), out, visited);
+        collectDir(fi.absoluteFilePath(), out, visited, excluded, visitedDirs);
 }
 
 } // namespace
@@ -76,8 +90,11 @@ bool isAudioFile(const QString &path)
     return exts.contains(QFileInfo(path).suffix().toLower());
 }
 
-TrackList collect(const QStringList &paths)
+TrackList collect(const QStringList &paths, const QStringList &excludedIn, QStringList *visitedDirs)
 {
+    QStringList excluded;
+    for (const QString &e : excludedIn)
+        excluded << QDir::cleanPath(QFileInfo(e).absoluteFilePath());
     TrackList out;
     QSet<QString> visited;
     for (const QString &p : paths) {
@@ -87,7 +104,7 @@ TrackList collect(const QStringList &paths)
         }
         const QFileInfo fi(p);
         if (fi.isDir()) {
-            collectDir(fi.absoluteFilePath(), out, visited);
+            collectDir(fi.absoluteFilePath(), out, visited, excluded, visitedDirs);
         } else if (PlaylistIO::isPlaylistFile(p)) {
             PlaylistData data;
             if (PlaylistIO::load(fi.absoluteFilePath(), data))

@@ -33,6 +33,7 @@ add_library(tembr_core STATIC
     src/core/MediaCollector.h src/core/MediaCollector.cpp
     src/core/PathResolver.h src/core/PathResolver.cpp
     src/core/Relocator.h src/core/Relocator.cpp
+    src/core/LocalFiles.h src/core/LocalFiles.cpp
     src/core/TrackQuery.h src/core/TrackQuery.cpp
     src/audio/AudioEngine.h src/audio/AudioEngine.cpp
     src/platform/Mpris.h src/platform/Mpris.cpp
@@ -65,7 +66,7 @@ install(FILES data/tembr.svg DESTINATION share/icons/hicolor/scalable/apps)
 if(TEMBR_BUILD_TESTS)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     enable_testing()
-    foreach(t test_playlistio test_trackquery test_hotkeys)
+    foreach(t test_playlistio test_trackquery test_hotkeys test_localfiles)
         add_executable(${t} tests/${t}.cpp)
         target_link_libraries(${t} PRIVATE tembr_core Qt6::Test)
         add_test(NAME ${t} COMMAND ${t})

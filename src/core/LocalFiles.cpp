@@ -1,0 +1,236 @@
+#include "core/LocalFiles.h"
+
+#include "core/MediaCollector.h"
+#include "core/PathResolver.h"
+#include "core/PlaylistIO.h"
+#include "core/TextDecode.h"
+
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QHash>
+#include <QSettings>
+#include <QStandardPaths>
+#include <QtConcurrent>
+
+namespace {
+
+QString trackKey(const Track &t)
+{
+    return t.isCueTrack() ? t.path + QLatin1Char('#') + QString::number(t.startMs) : t.path;
+}
+
+QStringList cleanFolders(const QStringList &in)
+{
+    QStringList out;
+    for (QString p : in) {
+        p = QDir::cleanPath(p.trimmed());
+        if (!p.isEmpty() && p != QLatin1String(".") && !out.contains(p))
+            out << p;
+    }
+    return out;
+}
+
+// AIMP.ini of AIMP for Windows: natively, or in the usual Wine prefix.
+QStringList aimpIniCandidates()
+{
+    QStringList out;
+#ifdef Q_OS_WIN
+    out << qEnvironmentVariable("APPDATA") + QStringLiteral("/AIMP/AIMP.ini");
+#endif
+    const QString prefix = qEnvironmentVariable("WINEPREFIX", QDir::homePath() + QStringLiteral("/.wine"));
+    for (const QString &user : QDir(prefix + QStringLiteral("/drive_c/users")).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        for (const char *sub : {"AppData/Roaming/AIMP/AIMP.ini", "Application Data/AIMP/AIMP.ini"})
+            out << QStringLiteral("%1/drive_c/users/%2/%3").arg(prefix, user, QLatin1String(sub));
+    }
+    return out;
+}
+
+QHash<QString, QString> iniSection(const QString &file, const QString &section)
+{
+    QHash<QString, QString> out;
+    QFile f(file);
+    if (!f.open(QIODevice::ReadOnly))
+        return out;
+    bool inSection = false;
+    for (const QString &raw : decodeText(f.readAll()).split(QLatin1Char('\n'))) {
+        const QString line = raw.trimmed();
+        if (line.startsWith(QLatin1Char('['))) {
+            inSection = line == QLatin1Char('[') + section + QLatin1Char(']');
+            continue;
+        }
+        const int eq = line.indexOf(QLatin1Char('='));
+        if (inSection && eq > 0)
+            out.insert(line.left(eq), line.mid(eq + 1));
+    }
+    return out;
+}
+
+} // namespace
+
+// --- Settings ------------------------------------------------------------------
+
+LocalFilesSettings LocalFilesSettings::load(bool *firstRun)
+{
+    QSettings s;
+    const bool configured = s.contains(QStringLiteral("localFiles/folders"));
+    if (firstRun)
+        *firstRun = !configured;
+    LocalFilesSettings out;
+    if (configured) {
+        out.folders = s.value(QStringLiteral("localFiles/folders")).toStringList();
+        out.excluded = s.value(QStringLiteral("localFiles/excluded")).toStringList();
+        out.watch = s.value(QStringLiteral("localFiles/watch"), true).toBool();
+        return out;
+    }
+    if (fromAimp(out))
+        return out;
+    const QString music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
+    if (QFileInfo(music).isDir())
+        out.folders << music;
+    return out;
+}
+
+void LocalFilesSettings::save() const
+{
+    QSettings s;
+    s.setValue(QStringLiteral("localFiles/folders"), folders);
+    s.setValue(QStringLiteral("localFiles/excluded"), excluded);
+    s.setValue(QStringLiteral("localFiles/watch"), watch);
+}
+
+bool LocalFilesSettings::fromAimp(LocalFilesSettings &out, QString *source, const QString &iniPath)
+{
+    const QStringList candidates = iniPath.isEmpty() ? aimpIniCandidates() : QStringList{iniPath};
+    const PathResolver resolver;
+    for (const QString &ini : candidates) {
+        if (!QFileInfo(ini).isFile())
+            continue;
+        const auto opts = iniSection(ini, QStringLiteral("MusicLibrary.TAIMPMLLocalDataStorage.SearchOptions"));
+        auto list = [&](const QString &count, const QString &item) {
+            QStringList paths;
+            for (int i = 0; i < opts.value(count).toInt(); ++i)
+                paths << resolver.resolve(opts.value(item + QString::number(i)));
+            return cleanFolders(paths);
+        };
+        const QStringList folders = list(QStringLiteral("SearchPathCount"), QStringLiteral("SearchPath"));
+        if (folders.isEmpty())
+            continue;
+        out.folders = folders;
+        out.excluded = list(QStringLiteral("ExcludedPathCount"), QStringLiteral("ExcludedPath"));
+        out.watch = true;   // AIMP follows folder changes unless switched off
+        if (source)
+            *source = ini;
+        return true;
+    }
+    return false;
+}
+
+// --- Scanning ------------------------------------------------------------------
+
+TrackList LocalLibrary::scan(const LocalFilesSettings &settings, const TrackList &known, QStringList *dirs)
+{
+    QHash<QString, Track> byKey;
+    for (const Track &t : known)
+        byKey.insert(trackKey(t), t);
+
+    QStringList folders;
+    for (const QString &f : cleanFolders(settings.folders)) {
+        if (QFileInfo(f).isDir())
+            folders << f;
+    }
+    TrackList found = MediaCollector::collect(folders, cleanFolders(settings.excluded), dirs);
+    TrackList out;
+    out.reserve(found.size());
+    for (Track &t : found) {
+        const auto it = byKey.constFind(trackKey(t));
+        if (it != byKey.constEnd() && it->scanned && !it->missing
+            && (it->isCueTrack() || it->fileSize == QFileInfo(t.path).size())) {
+            out.append(*it);   // unchanged: keep uid and tags
+            continue;
+        }
+        if (it != byKey.constEnd())
+            t.uid = it->uid;   // changed file: same entry, tags read again
+        out.append(t);
+    }
+    return out;
+}
+
+// --- LocalFiles ----------------------------------------------------------------
+
+LocalFiles::LocalFiles(QObject *parent)
+    : QObject(parent)
+{
+    bool firstRun = false;
+    m_settings = LocalFilesSettings::load(&firstRun);
+    if (firstRun && !m_settings.folders.isEmpty())
+        m_settings.save();   // keep AIMP's folders even if AIMP goes away later
+    m_debounce.setSingleShot(true);
+    m_debounce.setInterval(2000);   // copying an album touches a folder many times
+    connect(&m_fsWatcher, &QFileSystemWatcher::directoryChanged, &m_debounce, qOverload<>(&QTimer::start));
+    connect(&m_debounce, &QTimer::timeout, this, &LocalFiles::changedOnDisk);
+    connect(&m_watcher, &QFutureWatcher<QPair<TrackList, QStringList>>::finished, this, [this] {
+        const auto result = m_watcher.result();
+        watchDirs(result.second);
+        emit scanned(result.first);
+        if (m_rescanPending) {
+            m_rescanPending = false;
+            rescan(m_pendingKnown.isEmpty() ? result.first : m_pendingKnown);
+            return;
+        }
+        emit scanningChanged(false);
+    });
+}
+
+LocalFiles::~LocalFiles()
+{
+    m_watcher.waitForFinished();
+}
+
+void LocalFiles::setSettings(const LocalFilesSettings &s)
+{
+    m_settings = s;
+    m_settings.save();
+}
+
+TrackList LocalFiles::loadCache() const
+{
+    PlaylistData data;
+    const QString file = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/local-files.xspf");
+    return PlaylistIO::load(file, data) ? data.tracks : TrackList();
+}
+
+void LocalFiles::saveCache(const TrackList &tracks) const
+{
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir().mkpath(dir);
+    PlaylistIO::save(dir + QStringLiteral("/local-files.xspf"), {QStringLiteral("Локальные файлы"), tracks});
+}
+
+void LocalFiles::rescan(const TrackList &known)
+{
+    if (m_watcher.isRunning()) {
+        m_rescanPending = true;
+        m_pendingKnown = known;
+        return;
+    }
+    m_pendingKnown.clear();
+    emit scanningChanged(true);
+    const LocalFilesSettings s = m_settings;
+    m_watcher.setFuture(QtConcurrent::run([s, known] {
+        QStringList dirs;
+        TrackList tracks = LocalLibrary::scan(s, known, &dirs);
+        return qMakePair(tracks, dirs);
+    }));
+}
+
+void LocalFiles::watchDirs(const QStringList &dirs)
+{
+    if (!m_fsWatcher.directories().isEmpty())
+        m_fsWatcher.removePaths(m_fsWatcher.directories());
+    if (!m_settings.watch || dirs.isEmpty())
+        return;
+    // inotify watches are a limited resource (8192 by default on many systems).
+    constexpr int kMaxWatched = 4000;
+    m_fsWatcher.addPaths(dirs.mid(0, kMaxWatched));
+}
