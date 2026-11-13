@@ -61,6 +61,11 @@ add_executable(tembr
 target_link_libraries(tembr PRIVATE tembr_core Qt6::Widgets)
 target_compile_definitions(tembr PRIVATE TEMBR_VERSION="${PROJECT_VERSION}")
 install(TARGETS tembr RUNTIME DESTINATION bin)
+
+# --- migration tool ------------------------------------------------------------
+add_executable(tembr-migrate tools/tembr-migrate.cpp)
+target_link_libraries(tembr-migrate PRIVATE tembr_core)
+install(TARGETS tembr-migrate RUNTIME DESTINATION bin)
 install(FILES data/tembr.desktop DESTINATION share/applications)
 install(FILES data/tembr.svg DESTINATION share/icons/hicolor/scalable/apps)
 
