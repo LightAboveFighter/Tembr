@@ -41,19 +41,43 @@ QString gvString(QString s)
     return QLatin1Char('\'') + s + QLatin1Char('\'');
 }
 
+// X keysym names (what GNOME accelerators use) for numpad keys. With NumLock
+// off the numpad sends navigation keys (KP_Left for 4, KP_Begin for 5, ...).
+QString keypadName(int key)
+{
+    if (key >= Qt::Key_0 && key <= Qt::Key_9)
+        return QStringLiteral("KP_%1").arg(key - Qt::Key_0);
+    static const QHash<int, QString> names = {
+        {Qt::Key_Plus, QStringLiteral("KP_Add")},           {Qt::Key_Minus, QStringLiteral("KP_Subtract")},
+        {Qt::Key_Asterisk, QStringLiteral("KP_Multiply")},  {Qt::Key_Slash, QStringLiteral("KP_Divide")},
+        {Qt::Key_Enter, QStringLiteral("KP_Enter")},        {Qt::Key_Return, QStringLiteral("KP_Enter")},
+        {Qt::Key_Period, QStringLiteral("KP_Decimal")},     {Qt::Key_Comma, QStringLiteral("KP_Decimal")},
+        {Qt::Key_Equal, QStringLiteral("KP_Equal")},        {Qt::Key_Left, QStringLiteral("KP_Left")},
+        {Qt::Key_Right, QStringLiteral("KP_Right")},        {Qt::Key_Up, QStringLiteral("KP_Up")},
+        {Qt::Key_Down, QStringLiteral("KP_Down")},          {Qt::Key_Home, QStringLiteral("KP_Home")},
+        {Qt::Key_End, QStringLiteral("KP_End")},            {Qt::Key_PageUp, QStringLiteral("KP_Page_Up")},
+        {Qt::Key_PageDown, QStringLiteral("KP_Page_Down")}, {Qt::Key_Insert, QStringLiteral("KP_Insert")},
+        {Qt::Key_Delete, QStringLiteral("KP_Delete")},      {Qt::Key_Clear, QStringLiteral("KP_Begin")},
+    };
+    return names.value(key);
+}
+
+bool isMediaKey(int key)
+{
+    switch (key) {
+    case Qt::Key_MediaPlay: case Qt::Key_MediaTogglePlayPause: case Qt::Key_MediaPause:
+    case Qt::Key_MediaStop: case Qt::Key_MediaNext: case Qt::Key_MediaPrevious:
+    case Qt::Key_VolumeUp: case Qt::Key_VolumeDown: case Qt::Key_VolumeMute:
+        return true;
+    default:
+        return false;
+    }
+}
+
 QString keyName(int key, bool keypad)
 {
-    if (keypad) {
-        if (key >= Qt::Key_0 && key <= Qt::Key_9)
-            return QStringLiteral("KP_%1").arg(key - Qt::Key_0);
-        switch (key) {
-        case Qt::Key_Plus: return QStringLiteral("KP_Add");
-        case Qt::Key_Minus: return QStringLiteral("KP_Subtract");
-        case Qt::Key_Asterisk: return QStringLiteral("KP_Multiply");
-        case Qt::Key_Slash: return QStringLiteral("KP_Divide");
-        case Qt::Key_Enter: return QStringLiteral("KP_Enter");
-        }
-    }
+    if (keypad)
+        return keypadName(key);
     if (key >= Qt::Key_A && key <= Qt::Key_Z)
         return QString(QChar('a' + (key - Qt::Key_A)));
     if (key >= Qt::Key_0 && key <= Qt::Key_9)
@@ -116,16 +140,61 @@ QString idOf(Action a)
     return {};
 }
 
-Bindings load()
+Bindings load(QStringList *dropped)
 {
     QSettings s;
     Bindings b;
     for (const ActionInfo &i : actions()) {
         const QString v = s.value(QStringLiteral("hotkeys/") + i.id).toString();
-        if (!v.isEmpty())
-            b.insert(i.action, QKeySequence::fromString(v, QKeySequence::PortableText));
+        if (v.isEmpty())
+            continue;
+        const QKeySequence seq = QKeySequence::fromString(v, QKeySequence::PortableText);
+        if (!unsafeReason(seq).isEmpty()) {
+            if (dropped)
+                *dropped << QStringLiteral("%1 (%2)").arg(displayText(seq), i.title);
+            continue;
+        }
+        b.insert(i.action, seq);
     }
     return b;
+}
+
+QString unsafeReason(const QKeySequence &seq)
+{
+    if (seq.isEmpty())
+        return {};
+    const QKeyCombination kc = seq[0];
+    const int key = kc.key();
+    const Qt::KeyboardModifiers mods = kc.keyboardModifiers();
+    if (mods & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))
+        return {};
+    if (mods.testFlag(Qt::KeypadModifier) || (key >= Qt::Key_F1 && key <= Qt::Key_F35) || isMediaKey(key)
+        || key == Qt::Key_Pause || key == Qt::Key_Print || key == Qt::Key_ScrollLock)
+        return {};
+    return QStringLiteral("«%1» без Ctrl, Alt или Super перехватит эту клавишу во всех программах — "
+                          "её нельзя будет набрать. Добавьте модификатор или используйте клавишу "
+                          "цифрового блока, F1–F12 или медиаклавишу.")
+        .arg(displayText(seq));
+}
+
+QString displayText(const QKeySequence &seq)
+{
+    if (seq.isEmpty())
+        return {};
+    const QKeyCombination kc = seq[0];
+    const Qt::KeyboardModifiers mods = kc.keyboardModifiers();
+    QString out;
+    if (mods.testFlag(Qt::ControlModifier))
+        out += QStringLiteral("Ctrl+");
+    if (mods.testFlag(Qt::AltModifier))
+        out += QStringLiteral("Alt+");
+    if (mods.testFlag(Qt::ShiftModifier))
+        out += QStringLiteral("Shift+");
+    if (mods.testFlag(Qt::MetaModifier))
+        out += QStringLiteral("Super+");
+    if (mods.testFlag(Qt::KeypadModifier))
+        out += QStringLiteral("Numpad ");
+    return out + QKeySequence(kc.key()).toString(QKeySequence::NativeText);
 }
 
 void save(const Bindings &b)
@@ -184,6 +253,11 @@ QString gtkAccelerator(const QKeySequence &seq)
     return out + key;
 }
 
+QString releaseFromDesktop()
+{
+    return desktopSupported() ? applyToDesktop({}) : QString();
+}
+
 QString applyToDesktop(const Bindings &b)
 {
     if (!desktopSupported())
@@ -205,7 +279,8 @@ QString applyToDesktop(const Bindings &b)
         const QString accel = gtkAccelerator(seq);
         if (accel.isEmpty()) {
             if (!seq.isEmpty())
-                problems << QStringLiteral("%1: сочетание %2 не поддерживается").arg(i.title, seq.toString(QKeySequence::NativeText));
+                problems << QStringLiteral("%1: сочетание %2 не поддерживается (для букв включите английскую раскладку)")
+                                .arg(i.title, displayText(seq));
             if (list.removeAll(path) > 0)
                 gsettings({QStringLiteral("reset-recursively"), schema});
             continue;

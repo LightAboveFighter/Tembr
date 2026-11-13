@@ -27,8 +27,18 @@ QList<ActionInfo> actions();
 QString idOf(Action a);
 
 using Bindings = QHash<Action, QKeySequence>;
-Bindings load();                  // from QSettings
+// From QSettings. Bindings that are unsafe (see unsafeReason) are dropped and
+// their texts appended to `dropped`.
+Bindings load(QStringList *dropped = nullptr);
 void save(const Bindings &b);
+
+// A system-wide shortcut swallows the key in every application, so plain
+// typing keys (digits, letters, space, arrows…) need Ctrl, Alt or Super.
+// Numpad keys (Qt::KeypadModifier), F-keys and media keys may go alone.
+// Returns why `seq` can't be used, or an empty string.
+QString unsafeReason(const QKeySequence &seq);
+// "Ctrl+Alt+Right", "Numpad 4".
+QString displayText(const QKeySequence &seq);
 
 // The desktop integration that can register keys for us.
 bool desktopSupported();          // GNOME with gsettings
@@ -40,5 +50,7 @@ QString gtkAccelerator(const QKeySequence &seq);   // "<Control><Alt>Right"; emp
 // Registers (or removes, for empty sequences) the bindings with GNOME.
 // Returns an error message, or an empty string on success.
 QString applyToDesktop(const Bindings &b);
+// Removes all of Tembr's bindings from the desktop (on exit).
+QString releaseFromDesktop();
 
 } // namespace GlobalHotkeys

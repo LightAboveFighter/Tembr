@@ -1,6 +1,8 @@
 #include "platform/GlobalHotkeys.h"
 
+#include <QCoreApplication>
 #include <QFile>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
@@ -31,6 +33,75 @@ private slots:
         QCOMPARE(GlobalHotkeys::gtkAccelerator(QKeySequence::fromString(qt, QKeySequence::PortableText)), gtk);
     }
 
+    // The bug: numpad 4 was registered as plain "4" and blocked typing 4 everywhere.
+    void numpadIsNotTheDigitRow()
+    {
+        using GlobalHotkeys::gtkAccelerator;
+        QCOMPARE(gtkAccelerator(QKeySequence(QKeyCombination(Qt::KeypadModifier, Qt::Key_4))), QStringLiteral("KP_4"));
+        QCOMPARE(gtkAccelerator(QKeySequence(Qt::Key_4)), QStringLiteral("4"));
+        QCOMPARE(gtkAccelerator(QKeySequence(QKeyCombination(Qt::ControlModifier | Qt::KeypadModifier, Qt::Key_6))),
+                 QStringLiteral("<Control>KP_6"));
+        // NumLock off: numpad 4 / 5 arrive as Left / Clear.
+        QCOMPARE(gtkAccelerator(QKeySequence(QKeyCombination(Qt::KeypadModifier, Qt::Key_Left))), QStringLiteral("KP_Left"));
+        QCOMPARE(gtkAccelerator(QKeySequence(QKeyCombination(Qt::KeypadModifier, Qt::Key_Clear))), QStringLiteral("KP_Begin"));
+        QCOMPARE(gtkAccelerator(QKeySequence(QKeyCombination(Qt::KeypadModifier, Qt::Key_Enter))), QStringLiteral("KP_Enter"));
+    }
+
+    void numpadSurvivesSettings()
+    {
+        const QKeySequence kp(QKeyCombination(Qt::KeypadModifier, Qt::Key_5));
+        const QKeySequence back = QKeySequence::fromString(kp.toString(QKeySequence::PortableText), QKeySequence::PortableText);
+        QCOMPARE(back, kp);
+        QVERIFY(back[0].keyboardModifiers().testFlag(Qt::KeypadModifier));
+        QCOMPARE(GlobalHotkeys::displayText(kp), QStringLiteral("Numpad 5"));
+    }
+
+    void unsafeBindings_data()
+    {
+        QTest::addColumn<QKeySequence>("seq");
+        QTest::addColumn<bool>("safe");
+        QTest::newRow("digit") << QKeySequence(Qt::Key_4) << false;
+        QTest::newRow("letter") << QKeySequence(Qt::Key_A) << false;
+        QTest::newRow("space") << QKeySequence(Qt::Key_Space) << false;
+        QTest::newRow("shift+letter") << QKeySequence(QKeyCombination(Qt::ShiftModifier, Qt::Key_A)) << false;
+        QTest::newRow("arrow") << QKeySequence(Qt::Key_Left) << false;
+        QTest::newRow("numpad 4") << QKeySequence(QKeyCombination(Qt::KeypadModifier, Qt::Key_4)) << true;
+        QTest::newRow("ctrl+4") << QKeySequence(QKeyCombination(Qt::ControlModifier, Qt::Key_4)) << true;
+        QTest::newRow("alt+space") << QKeySequence(QKeyCombination(Qt::AltModifier, Qt::Key_Space)) << true;
+        QTest::newRow("super+n") << QKeySequence(QKeyCombination(Qt::MetaModifier, Qt::Key_N)) << true;
+        QTest::newRow("f8") << QKeySequence(Qt::Key_F8) << true;
+        QTest::newRow("media next") << QKeySequence(Qt::Key_MediaNext) << true;
+    }
+
+    void unsafeBindings()
+    {
+        QFETCH(QKeySequence, seq);
+        QFETCH(bool, safe);
+        QCOMPARE(GlobalHotkeys::unsafeReason(seq).isEmpty(), safe);
+    }
+
+    // Settings saved by the old version ("4") are dropped on load, numpad kept.
+    void loadDropsUnsafeBindings()
+    {
+        QStandardPaths::setTestModeEnabled(true);
+        QCoreApplication::setOrganizationName(QStringLiteral("tembr-test"));
+        QCoreApplication::setApplicationName(QStringLiteral("tembr-test"));
+        {
+            QSettings s;
+            s.clear();
+            s.setValue(QStringLiteral("hotkeys/previous"), QStringLiteral("4"));
+            s.setValue(QStringLiteral("hotkeys/next"),
+                       QKeySequence(QKeyCombination(Qt::KeypadModifier, Qt::Key_6)).toString(QKeySequence::PortableText));
+        }
+        QStringList dropped;
+        const auto b = GlobalHotkeys::load(&dropped);
+        QCOMPARE(dropped.size(), 1);
+        QVERIFY(dropped.first().startsWith(QStringLiteral("4 ")));
+        QVERIFY(!b.contains(GlobalHotkeys::Action::Previous));
+        QCOMPARE(GlobalHotkeys::gtkAccelerator(b.value(GlobalHotkeys::Action::Next)), QStringLiteral("KP_6"));
+        QSettings().clear();
+    }
+
     void emptyAndUnsupported()
     {
         QVERIFY(GlobalHotkeys::gtkAccelerator(QKeySequence()).isEmpty());
@@ -54,6 +125,7 @@ private slots:
         GlobalHotkeys::Bindings b;
         b.insert(Action::Next, QKeySequence(QStringLiteral("Ctrl+Alt+Right")));
         b.insert(Action::PlayPause, QKeySequence(QStringLiteral("Ctrl+Alt+Space")));
+        b.insert(Action::Stop, QKeySequence(QKeyCombination(Qt::KeypadModifier, Qt::Key_5)));
         QCOMPARE(GlobalHotkeys::applyToDesktop(b), QString());
 
         auto keyfile = [&] {
@@ -65,6 +137,7 @@ private slots:
         QVERIFY(kf.contains(QStringLiteral("binding='<Control><Alt>Right'")));
         QVERIFY(kf.contains(QStringLiteral(" --next'")));
         QVERIFY(kf.contains(QStringLiteral("binding='<Control><Alt>space'")));
+        QVERIFY(kf.contains(QStringLiteral("binding='KP_5'")));
 
         // Clearing a binding removes it from GNOME's list again.
         b.remove(Action::Next);
@@ -72,6 +145,14 @@ private slots:
         kf = keyfile();
         QVERIFY2(!kf.contains(QStringLiteral("custom-keybindings/tembr-next/'")), qPrintable(kf));
         QVERIFY(kf.contains(QStringLiteral("custom-keybindings/tembr-play-pause/'")));
+
+        // On exit everything of ours is released.
+        QCOMPARE(GlobalHotkeys::releaseFromDesktop(), QString());
+        kf = keyfile();
+        // (the keyfile backend keeps empty [section] headers of reset paths)
+        QVERIFY2(!kf.contains(QStringLiteral("binding=")), qPrintable(kf));
+        QVERIFY2(kf.contains(QStringLiteral("custom-keybindings=[]")) || kf.contains(QStringLiteral("custom-keybindings=@as []")),
+                 qPrintable(kf));
     }
 
     void commandsUseCliFlags()

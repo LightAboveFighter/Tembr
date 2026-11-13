@@ -53,6 +53,7 @@ add_executable(tembr
     src/ui/Icons.h src/ui/Icons.cpp
     src/ui/NowPlayingPanel.h src/ui/NowPlayingPanel.cpp
     src/ui/SettingsDialog.h src/ui/SettingsDialog.cpp
+    src/ui/HotkeyEdit.h src/ui/HotkeyEdit.cpp
 )
 target_link_libraries(tembr PRIVATE tembr_core Qt6::Widgets)
 target_compile_definitions(tembr PRIVATE TEMBR_VERSION="${PROJECT_VERSION}")
@@ -69,6 +70,11 @@ if(TEMBR_BUILD_TESTS)
         target_link_libraries(${t} PRIVATE tembr_core Qt6::Test)
         add_test(NAME ${t} COMMAND ${t})
     endforeach()
+
+    add_executable(test_hotkeyedit tests/test_hotkeyedit.cpp src/ui/HotkeyEdit.cpp src/ui/HotkeyEdit.h)
+    target_link_libraries(test_hotkeyedit PRIVATE tembr_core Qt6::Widgets Qt6::Test)
+    add_test(NAME test_hotkeyedit COMMAND test_hotkeyedit)
+    set_tests_properties(test_hotkeyedit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     # Manual tools (see the file headers).
     add_executable(playlist_probe tests/playlist_probe.cpp)

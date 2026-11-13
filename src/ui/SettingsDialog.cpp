@@ -1,6 +1,7 @@
 #include "ui/SettingsDialog.h"
 
 #include "core/MediaCollector.h"
+#include "ui/HotkeyEdit.h"
 #include "ui/Icons.h"
 
 #include <QCheckBox>
@@ -12,7 +13,6 @@
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGroupBox>
-#include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -30,7 +30,8 @@ AppSettings AppSettings::load()
     a.theme = Theme::fromString(s.value(QStringLiteral("ui/theme"), QStringLiteral("dark")).toString());
     a.trayIcon = s.value(QStringLiteral("ui/trayIcon"), true).toBool();
     a.closeToTray = s.value(QStringLiteral("ui/closeToTray"), false).toBool();
-    a.hotkeys = GlobalHotkeys::load();
+    a.hotkeys = GlobalHotkeys::load(&a.droppedHotkeys);
+    a.releaseHotkeysOnExit = s.value(QStringLiteral("hotkeys/releaseOnExit"), true).toBool();
     return a;
 }
 
@@ -40,6 +41,7 @@ void AppSettings::save() const
     s.setValue(QStringLiteral("ui/theme"), Theme::toString(theme));
     s.setValue(QStringLiteral("ui/trayIcon"), trayIcon);
     s.setValue(QStringLiteral("ui/closeToTray"), closeToTray);
+    s.setValue(QStringLiteral("hotkeys/releaseOnExit"), releaseHotkeysOnExit);
     GlobalHotkeys::save(hotkeys);
 }
 
@@ -83,20 +85,13 @@ SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
     const bool supported = GlobalHotkeys::desktopSupported();
     int row = 0;
     for (const auto &info : GlobalHotkeys::actions()) {
-        auto *edit = new QKeySequenceEdit(current.hotkeys.value(info.action));
+        auto *edit = new HotkeyEdit(current.hotkeys.value(info.action));
         edit->setEnabled(supported);
-        if (auto *line = edit->findChild<QLineEdit *>())
-            line->setPlaceholderText(QStringLiteral("Нажмите сочетание…"));
         auto *clear = new QToolButton;
         clear->setText(QStringLiteral("✕"));
         clear->setToolTip(QStringLiteral("Убрать сочетание"));
         clear->setEnabled(supported);
-        connect(clear, &QToolButton::clicked, edit, &QKeySequenceEdit::clear);
-        // Only the first chord is used.
-        connect(edit, &QKeySequenceEdit::editingFinished, edit, [edit] {
-            if (edit->keySequence().count() > 1)
-                edit->setKeySequence(QKeySequence(edit->keySequence()[0]));
-        });
+        connect(clear, &QToolButton::clicked, edit, &HotkeyEdit::clearSequence);
         grid->addWidget(new QLabel(info.title + QLatin1Char(':')), row, 0);
         grid->addWidget(edit, row, 1);
         grid->addWidget(clear, row, 2);
@@ -105,6 +100,13 @@ SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
     }
     keysLayout->addLayout(grid);
 
+    m_releaseKeys = new QCheckBox(QStringLiteral("Освобождать клавиши, когда Tembr закрыт"));
+    m_releaseKeys->setToolTip(QStringLiteral(
+        "Сочетания действуют, только пока плеер запущен: после выхода клавиши снова работают как обычно"));
+    m_releaseKeys->setChecked(current.releaseHotkeysOnExit);
+    m_releaseKeys->setEnabled(supported);
+    keysLayout->addWidget(m_releaseKeys);
+
     auto *keysNote = new QLabel;
     keysNote->setWordWrap(true);
     keysNote->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -112,8 +114,10 @@ SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
     if (supported) {
         keysNote->setText(QStringLiteral(
             "Сочетания регистрируются в GNOME (Настройки → Клавиатура → Комбинации клавиш → "
-            "Дополнительные комбинации), поэтому срабатывают в любом окне. Выбирайте сочетания, "
-            "не занятые системой, например Ctrl+Alt+→. Медиаклавиши клавиатуры работают и без этого."));
+            "Дополнительные комбинации) и срабатывают в любом окне. Клавиши цифрового блока "
+            "(Numpad) отличаются от цифр над буквами. Обычные клавиши — цифры, буквы, пробел — "
+            "нужно сочетать с Ctrl, Alt или Super, иначе их нельзя было бы набрать в других программах. "
+            "Медиаклавиши клавиатуры работают и без настройки."));
     } else {
         QStringList cmds;
         for (const auto &info : GlobalHotkeys::actions())
@@ -137,7 +141,7 @@ SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("Отмена"));
-    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::accepted, this, &SettingsDialog::tryAccept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
     auto *layout = new QVBoxLayout(this);
@@ -149,12 +153,37 @@ SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
     layout->addWidget(buttons);
 }
 
+void SettingsDialog::tryAccept()
+{
+    QStringList problems;
+    QHash<QString, QString> used;   // accelerator -> action, to catch duplicates
+    for (const auto &info : GlobalHotkeys::actions()) {
+        const QKeySequence seq = m_keys.value(info.action)->keySequence();
+        if (seq.isEmpty())
+            continue;
+        const QString reason = GlobalHotkeys::unsafeReason(seq);
+        if (!reason.isEmpty())
+            problems << QStringLiteral("%1: %2").arg(info.title, reason);
+        const QString accel = GlobalHotkeys::gtkAccelerator(seq);
+        if (!accel.isEmpty() && used.contains(accel))
+            problems << QStringLiteral("%1: %2 уже назначено на «%3»")
+                            .arg(info.title, GlobalHotkeys::displayText(seq), used.value(accel));
+        used.insert(accel, info.title);
+    }
+    if (!problems.isEmpty()) {
+        QMessageBox::warning(this, windowTitle(), problems.join(QStringLiteral("\n\n")));
+        return;
+    }
+    accept();
+}
+
 AppSettings SettingsDialog::values() const
 {
     AppSettings a;
     a.theme = Theme::fromString(m_theme->currentData().toString());
     a.trayIcon = m_tray->isChecked();
     a.closeToTray = m_tray->isChecked() && m_closeToTray->isChecked();
+    a.releaseHotkeysOnExit = m_releaseKeys->isChecked();
     for (auto it = m_keys.cbegin(); it != m_keys.cend(); ++it) {
         if (!it.value()->keySequence().isEmpty())
             a.hotkeys.insert(it.key(), it.value()->keySequence());

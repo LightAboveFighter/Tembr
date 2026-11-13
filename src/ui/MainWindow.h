@@ -3,6 +3,7 @@
 #include "audio/AudioEngine.h"
 #include "ui/SettingsDialog.h"
 
+#include <QFuture>
 #include <QImage>
 #include <QMainWindow>
 #include <QPointer>
@@ -46,6 +47,8 @@ private:
     void showAndRaise();
     void toggleVisible();
     void quit();
+    void registerHotkeys();
+    void releaseHotkeys();
 
     PlaylistPage *currentPage() const;
     PlaylistPage *addPage(const QString &name);
@@ -110,4 +113,6 @@ private:
     QImage m_coverImage;
     QString m_artFile;          // cover exported for MPRIS clients
     int m_failStreak = 0;       // consecutive unplayable tracks skipped
+    QFuture<QString> m_hotkeyJob;   // background registration at startup
+    bool m_hotkeysReleased = false;
 };

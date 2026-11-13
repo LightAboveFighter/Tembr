@@ -151,6 +151,22 @@ MainWindow::MainWindow(QWidget *parent)
     m_settings = AppSettings::load();
     applySettings(m_settings);
     restoreSession();
+    registerHotkeys();
+    // Also on logout and other ways out that skip closeEvent.
+    connect(qApp, &QCoreApplication::aboutToQuit, this, &MainWindow::releaseHotkeys);
+
+    if (!m_settings.droppedHotkeys.isEmpty()) {
+        m_settings.save();   // forget them for good
+        QTimer::singleShot(0, this, [this, dropped = m_settings.droppedHotkeys] {
+            QMessageBox::information(
+                this, windowTitle(),
+                QStringLiteral("Сброшены глобальные сочетания: %1.\n\n"
+                               "Клавиши без Ctrl, Alt или Super перехватывались во всех программах, "
+                               "и их нельзя было набрать. Назначьте сочетания заново в «Файл → Настройки»: "
+                               "теперь клавиши цифрового блока отличаются от обычных цифр.")
+                    .arg(dropped.join(QStringLiteral(", "))));
+        });
+    }
 
     if (!m_engine->isDeviceOk()) {
         QTimer::singleShot(0, this, [this] {
@@ -435,6 +451,23 @@ void MainWindow::setupTray(bool enabled)
     updateNowPlaying();
 }
 
+void MainWindow::registerHotkeys()
+{
+    // gsettings takes a while; don't hold up the window.
+    if (GlobalHotkeys::desktopSupported())
+        m_hotkeyJob = QtConcurrent::run(&GlobalHotkeys::applyToDesktop, m_settings.hotkeys);
+}
+
+void MainWindow::releaseHotkeys()
+{
+    if (m_hotkeysReleased)
+        return;
+    m_hotkeysReleased = true;
+    m_hotkeyJob.waitForFinished();
+    if (m_settings.releaseHotkeysOnExit && !m_settings.hotkeys.isEmpty())
+        GlobalHotkeys::releaseFromDesktop();
+}
+
 void MainWindow::showSettings()
 {
     SettingsDialog dlg(m_settings, this);
@@ -446,6 +479,7 @@ void MainWindow::showSettings()
     m_settings.save();
     applySettings(m_settings);
     if (keysChanged) {
+        m_hotkeyJob.waitForFinished();
         const QString err = GlobalHotkeys::applyToDesktop(m_settings.hotkeys);
         if (!err.isEmpty())
             QMessageBox::warning(this, windowTitle(), QStringLiteral("Не все клавиши удалось назначить:\n") + err);
@@ -1078,6 +1112,7 @@ void MainWindow::closeEvent(QCloseEvent *e)
     }
     saveSession();
     m_engine->unload();
+    releaseHotkeys();
     if (!m_artFile.isEmpty())
         QFile::remove(m_artFile);
     e->accept();

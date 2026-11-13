@@ -8,7 +8,7 @@
 
 class QCheckBox;
 class QComboBox;
-class QKeySequenceEdit;
+class HotkeyEdit;
 
 struct AppSettings
 {
@@ -16,6 +16,9 @@ struct AppSettings
     bool trayIcon = true;
     bool closeToTray = false;
     GlobalHotkeys::Bindings hotkeys;
+    bool releaseHotkeysOnExit = true;   // keys are only grabbed while Tembr runs
+
+    QStringList droppedHotkeys;   // unsafe stored bindings ignored by load()
 
     static AppSettings load();
     void save() const;
@@ -32,7 +35,10 @@ private:
     QComboBox *m_theme;
     QCheckBox *m_tray;
     QCheckBox *m_closeToTray;
-    QHash<GlobalHotkeys::Action, QKeySequenceEdit *> m_keys;
+    QCheckBox *m_releaseKeys;
+    QHash<GlobalHotkeys::Action, HotkeyEdit *> m_keys;
+
+    void tryAccept();
 };
 
 // Creates ~/.local/share/applications/tembr.desktop (+ icon) for the running
