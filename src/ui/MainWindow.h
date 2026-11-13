@@ -73,6 +73,8 @@ private:
     void openPlaylists();
     void savePlaylist();
     void findMovedFiles();
+    void importFromAimp();
+    void rememberMoves(const QList<QPair<QString, QString>> &moves);
     void offerToFindMoved(int missing, int total);
 
     void saveSession();

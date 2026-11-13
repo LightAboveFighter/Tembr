@@ -41,6 +41,39 @@
   | `year:1970-1979 genre:rock` | диапазон лет |
   | `исполнитель:кино -live` | русские имена полей, исключение |
 
+## Перенос из AIMP
+
+**В плеере:** «Файл → Импорт из AIMP (компьютер, Android)…» (Ctrl+Shift+I).
+
+- **AIMP на этом компьютере.** Профиль AIMP для Windows ищется в Wine (`~/.wine`, `$WINEPREFIX`,
+  `~/.local/share/wineprefixes`), Bottles, PlayOnLinux, Lutris, Steam/Proton, в портативных установках
+  и в `%APPDATA%` на Windows. Переносятся именно открытые вкладки в порядке AIMP: список берётся из
+  `AIMP.ini` (`[Playlist.Storage]`). Выбирается активная вкладка, отмечается трек, на котором
+  остановился AIMP. AIMP оставляет в папке `PLS` старые копии плейлистов (`SD.aimppl4` рядом с
+  открытым `SD (2).aimppl4`). Они показываются отдельно, если попросить.
+- **Телефон Android по USB.** AIMP для Android хранит плейлисты внутри приложения, поэтому сначала
+  сохраните их в файлы: меню плейлиста → «Экспорт» (например, в папку Music). Затем подключите
+  телефон в режиме «Передача файлов» (MTP) или с включённой отладкой по USB (ADB). Плейлисты
+  (`m3u`, `m3u8`, `pls`, `xspf`, `aimppl4`) ищутся по всей памяти телефона, кроме служебных папок
+  других приложений. Понимаются пути `/storage/emulated/0/…`, `/sdcard/…`, SD-карты, `file://`,
+  `content://` и пути относительно плейлиста. Подойдёт и любая папка: SD-карта в кардридере
+  или копия памяти телефона.
+- Треки, которых нет на прежнем месте, ищутся по имени (при совпадении имён сравнивается размер)
+  в папке «Музыка на этом компьютере». Найденные перемещения папок запоминаются.
+  Треки, которые есть только на телефоне, можно скопировать на компьютер: структура папок
+  телефона сохраняется, кроме верхней `Music/`, существующие файлы не перезаписываются.
+
+**Из консоли:** `tembr-migrate`
+
+```sh
+tembr-migrate aimp --library /media/Music                    # отчёт: что найдено
+tembr-migrate aimp --library /media/Music --out ~/playlists  # записать плейлисты (xspf)
+tembr-migrate phones                                         # подключённые телефоны
+tembr-migrate android --library /media/Music --copy-to /media/Music --out ~/playlists --format m3u8
+```
+
+Без `--out` ничего не записывается. Формат: `--format xspf|m3u8|aimppl4`.
+
 ## Сборка
 
 Ubuntu/Debian:
@@ -90,7 +123,8 @@ tembr --play-pause | --stop | --next | --previous | --volume-up | --volume-down 
 ## Тесты и утилиты
 
 ```sh
-ctest --test-dir build --output-on-failure   # плейлисты, пути Wine, AIMPPL4, поиск, клавиши GNOME (в изолированном gsettings)
+ctest --test-dir build --output-on-failure   # плейлисты, пути Wine, AIMPPL4, поиск, клавиши GNOME,
+                                             # миграция (AIMP.ini, пути Android, MTP, ADB через фейковый adb)
 ./build/engine_smoke ~/Music/альбом          # воспроизведение на реальном устройстве (громкость 0)
 ./build/playlist_probe --search /media/Music ~/.wine/drive_c/users/$USER/AppData/Roaming/AIMP/PLS/*.aimppl4
                                              # сколько треков плейлистов найдено и сколько можно найти поиском
@@ -106,6 +140,10 @@ src/
   core/PlaylistIO         M3U/M3U8/PLS/XSPF/CUE/AIMPPL4
   core/PathResolver       пути Windows/Wine, относительные, «папка переехала»
   core/Relocator          поиск перемещённых файлов по имени
+  migration/AimpProfiles  профили AIMP на этом компьютере, открытые вкладки из AIMP.ini
+  migration/PhoneSources  телефон: MTP (gvfs), ADB, папка
+  migration/PhoneImport   пути Android → файлы на ПК, копирование с телефона
+tools/tembr-migrate       консольная утилита переноса
   core/MediaCollector     разворачивание папок/плейлистов в треки
   core/TrackQuery         поисковые запросы
   platform/Mpris          MPRIS 2 + org.tembr.Tembr (команды, единственный экземпляр)
