@@ -95,7 +95,10 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    av_log_set_level(AV_LOG_ERROR);   // FFmpeg is chatty about odd tags
+    // FFmpeg reports damaged tags and frames in files that play fine ("Incorrect BOM
+    // value", "invalid new backstep"); real failures reach the UI anyway. TEMBR_DEBUG=1
+    // brings the messages back.
+    av_log_set_level(qEnvironmentVariableIsSet("TEMBR_DEBUG") ? AV_LOG_WARNING : AV_LOG_FATAL);
 
     Theme::apply(AppSettings::load().theme);
     app.setProperty("tembrThemeApplied", true);
