@@ -19,6 +19,7 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDesktopServices>
+#include <QDialog>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -507,7 +508,17 @@ void MainWindow::toggleVisible()
 void MainWindow::quit()
 {
     m_quitting = true;
-    close();
+    // An open modal dialog (message box, settings) blocks closing the window,
+    // so Quit from the tray or MPRIS would do nothing. Dismiss it first.
+    while (QWidget *modal = QApplication::activeModalWidget()) {
+        if (auto *dlg = qobject_cast<QDialog *>(modal))
+            dlg->reject();
+        else
+            modal->close();
+        if (QApplication::activeModalWidget() == modal)
+            break;
+    }
+    QTimer::singleShot(0, this, &QWidget::close);
 }
 
 void MainWindow::handleCommand(const QString &command)
