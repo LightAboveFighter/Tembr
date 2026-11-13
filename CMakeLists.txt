@@ -37,6 +37,7 @@ add_library(tembr_core STATIC
     src/audio/AudioEngine.h src/audio/AudioEngine.cpp
     src/platform/Mpris.h src/platform/Mpris.cpp
     src/platform/GlobalHotkeys.h src/platform/GlobalHotkeys.cpp
+    src/migration/AimpProfiles.h src/migration/AimpProfiles.cpp
 )
 target_include_directories(tembr_core PUBLIC src)
 target_link_libraries(tembr_core PUBLIC Qt6::Core Qt6::Gui Qt6::Concurrent Qt6::DBus PkgConfig::FFMPEG miniaudio)
@@ -65,7 +66,7 @@ install(FILES data/tembr.svg DESTINATION share/icons/hicolor/scalable/apps)
 if(TEMBR_BUILD_TESTS)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     enable_testing()
-    foreach(t test_playlistio test_trackquery test_hotkeys)
+    foreach(t test_playlistio test_trackquery test_hotkeys test_migration)
         add_executable(${t} tests/${t}.cpp)
         target_link_libraries(${t} PRIVATE tembr_core Qt6::Test)
         add_test(NAME ${t} COMMAND ${t})
