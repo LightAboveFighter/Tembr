@@ -47,6 +47,11 @@ struct AimpSession
 // with the same name only the newest one.
 AimpSession readAimpSession(const AimpProfile &profile);
 
+// Display order that keeps playlists with the same name together (an open
+// tab and the old copies AIMP left behind), newest first within a group;
+// groups follow AIMP's tab order, then by name. Indexes into session.playlists.
+QList<int> groupedByName(const AimpSession &session, bool includeClosed = true);
+
 // Folders of AIMP's music library ("Local files"): where AIMP looks for music,
 // as local paths. `excluded` gets the excluded folders.
 QStringList aimpLibraryFolders(const AimpProfile &profile, QStringList *excluded = nullptr);

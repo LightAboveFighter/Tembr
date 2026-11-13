@@ -124,9 +124,11 @@ MigrationDialog::MigrationDialog(QWidget *parent)
     m_find = new QPushButton(QStringLiteral("Найти плейлисты"));
     m_list = new QTreeWidget;
     m_list->setRootIsDecorated(false);
-    m_list->setHeaderLabels({QStringLiteral("Плейлист"), QStringLiteral("Треков"), QStringLiteral("Где")});
+    m_list->setHeaderLabels({QStringLiteral("Плейлист"), QStringLiteral("Треков"), QStringLiteral("Изменён"),
+                             QStringLiteral("Где")});
     m_list->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_list->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_list->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_list->header()->setStretchLastSection(true);
     auto *checkAll = new QPushButton(QStringLiteral("Отметить все"));
     auto *uncheckAll = new QPushButton(QStringLiteral("Снять все"));
@@ -286,16 +288,25 @@ void MigrationDialog::findPlaylists()
             return;
         m_session = Migration::readAimpSession(m_profiles[idx]);
         QList<Item> items;
-        for (int i = 0; i < m_session.playlists.size(); ++i) {
+        // With old copies shown, versions of the same playlist stand together, newest first.
+        QList<int> order;
+        if (m_includeOld->isChecked()) {
+            order = Migration::groupedByName(m_session);
+        } else {
+            for (int i = 0; i < m_session.playlists.size(); ++i) {
+                if (m_session.playlists[i].open)
+                    order << i;
+            }
+        }
+        for (int i : std::as_const(order)) {
             const auto &p = m_session.playlists[i];
-            if (!p.open && !m_includeOld->isChecked())
-                continue;
             Item it;
             it.name = p.name;
             it.tracks = p.trackCount;
+            it.modified = p.modified;
             it.where = QFileInfo(p.file).fileName();
             if (!p.open)
-                it.where += QStringLiteral("  (старая копия от %1)").arg(QLocale().toString(p.modified, QLocale::ShortFormat));
+                it.where += QStringLiteral("  (старая копия)");
             if (i == m_session.activeIndex)
                 it.where += QStringLiteral("  — активный");
             it.checked = p.open;
@@ -340,10 +351,12 @@ void MigrationDialog::showItems(const QList<Item> &items)
     const QSignalBlocker block(m_list);
     m_list->clear();
     for (const Item &it : items) {
-        auto *w = new QTreeWidgetItem({it.name, it.tracks >= 0 ? QString::number(it.tracks) : QStringLiteral("—"), it.where});
+        auto *w = new QTreeWidgetItem({it.name, it.tracks >= 0 ? QString::number(it.tracks) : QStringLiteral("—"),
+                                       it.modified.isValid() ? QLocale().toString(it.modified, QLocale::ShortFormat) : QString(),
+                                       it.where});
         w->setCheckState(0, it.checked ? Qt::Checked : Qt::Unchecked);
         w->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
-        w->setToolTip(2, it.where);
+        w->setToolTip(3, it.where);
         m_list->addTopLevelItem(w);
     }
     updateButtons();

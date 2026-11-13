@@ -162,10 +162,9 @@ int runAimp(const Args &a)
     const QString format = a.value("format").isEmpty() ? QStringLiteral("xspf") : a.value("format");
     out(QStringLiteral("\nПлейлисты профиля [%1]:").arg(index));
     int total = 0, found = 0;
-    for (int i = 0; i < session.playlists.size(); ++i) {
+    // With --all, versions of the same playlist stand together, newest first.
+    for (int i : groupedByName(session, a.has("all"))) {
         const AimpPlaylistInfo &info = session.playlists[i];
-        if (!info.open && !a.has("all"))
-            continue;
         PlaylistData data;
         QString error;
         if (!loadAimpPlaylist(info, data, &error)) {
@@ -182,7 +181,10 @@ int runAimp(const Args &a)
         if (i == session.playingIndex)
             marks += QStringLiteral(" [играл]");
         if (!info.open)
-            marks += QStringLiteral(" [старая копия: %1]").arg(QFileInfo(info.file).fileName());
+            marks += QStringLiteral(" [старая копия: %1, %2]")
+                         .arg(QFileInfo(info.file).fileName(), info.modified.toString(QStringLiteral("yyyy-MM-dd HH:mm")));
+        else if (a.has("all"))
+            marks += QStringLiteral(" [%1]").arg(info.modified.toString(QStringLiteral("yyyy-MM-dd HH:mm")));
         if (relocated > 0)
             marks += QStringLiteral(" (из них %1 найдено в --library)").arg(relocated);
         QString line = QStringLiteral("  %1  %2 треков, найдено %3%4").arg(info.name, -28).arg(data.tracks.size(), 5).arg(ok, 5).arg(marks);

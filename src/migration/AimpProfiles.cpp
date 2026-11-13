@@ -254,6 +254,40 @@ QStringList aimpLibraryFolders(const AimpProfile &profile, QStringList *excluded
     return list(QStringLiteral("SearchPathCount"), QStringLiteral("SearchPath"));
 }
 
+QList<int> groupedByName(const AimpSession &session, bool includeClosed)
+{
+    // Group key -> members; the group sits where its first open member is.
+    QHash<QString, QList<int>> groups;
+    QHash<QString, int> groupPos;
+    for (int i = 0; i < session.playlists.size(); ++i) {
+        const AimpPlaylistInfo &p = session.playlists[i];
+        if (!p.open && !includeClosed)
+            continue;
+        const QString key = p.name.toLower();
+        groups[key].append(i);
+        if (p.open && !groupPos.contains(key))
+            groupPos.insert(key, i);
+    }
+    QStringList keys = groups.keys();
+    std::sort(keys.begin(), keys.end(), [&](const QString &a, const QString &b) {
+        const bool ao = groupPos.contains(a), bo = groupPos.contains(b);
+        if (ao != bo)
+            return ao;                                    // groups with an open tab first
+        if (ao)
+            return groupPos.value(a) < groupPos.value(b); // in AIMP's tab order
+        return a < b;
+    });
+    QList<int> order;
+    for (const QString &key : std::as_const(keys)) {
+        QList<int> members = groups.value(key);
+        std::stable_sort(members.begin(), members.end(), [&](int a, int b) {
+            return session.playlists[a].modified > session.playlists[b].modified;   // newest first
+        });
+        order += members;
+    }
+    return order;
+}
+
 bool loadAimpPlaylist(const AimpPlaylistInfo &info, PlaylistData &out, QString *error)
 {
     if (!PlaylistIO::load(info.file, out, error))

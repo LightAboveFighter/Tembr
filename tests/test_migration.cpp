@@ -127,6 +127,39 @@ private slots:
         QVERIFY(!s.playlists[1].open);
     }
 
+    // Versions of a playlist stand together, newest first; groups in tab order.
+    void oldCopiesGroupedByName()
+    {
+        QTemporaryDir dir;
+        const Migration::AimpProfile profile{QStringLiteral("test"), dir.path()};
+        auto add = [&](const QString &file, const QString &name, int daysAgo) {
+            const QString path = profile.plsDir() + QLatin1Char('/') + file;
+            writeUtf16(path, aimpPlaylist(name, QLatin1Char('{') + file + QLatin1Char('}'), {}));
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::ReadWrite));
+            QVERIFY(f.setFileTime(QDateTime::currentDateTime().addDays(-daysAgo), QFileDevice::FileModificationTime));
+        };
+        add(QStringLiteral("Rock.aimppl4"), QStringLiteral("Rock"), 300);
+        add(QStringLiteral("Rock (2).aimppl4"), QStringLiteral("Rock"), 10);     // open
+        add(QStringLiteral("Rock (3).aimppl4"), QStringLiteral("Rock"), 100);
+        add(QStringLiteral("Jazz.aimppl4"), QStringLiteral("Jazz"), 5);          // open, first tab
+        add(QStringLiteral("Jazz (2).aimppl4"), QStringLiteral("Jazz"), 1);      // newer, but closed
+        add(QStringLiteral("Blues.aimppl4"), QStringLiteral("Blues"), 50);       // closed only
+        writeUtf16(profile.iniPath(), QStringLiteral("[Playlist.Storage]\r\nCount=2\r\nItem1=Jazz.aimppl4\r\n"
+                                                     "Item2=Rock (2).aimppl4\r\n"));
+        const auto s = Migration::readAimpSession(profile);
+        QStringList files;
+        for (int i : Migration::groupedByName(s))
+            files << QFileInfo(s.playlists[i].file).fileName();
+        QCOMPARE(files, (QStringList{QStringLiteral("Jazz (2).aimppl4"), QStringLiteral("Jazz.aimppl4"),
+                                     QStringLiteral("Rock (2).aimppl4"), QStringLiteral("Rock (3).aimppl4"),
+                                     QStringLiteral("Rock.aimppl4"), QStringLiteral("Blues.aimppl4")}));
+        files.clear();
+        for (int i : Migration::groupedByName(s, false))
+            files << QFileInfo(s.playlists[i].file).fileName();
+        QCOMPARE(files, (QStringList{QStringLiteral("Jazz.aimppl4"), QStringLiteral("Rock (2).aimppl4")}));
+    }
+
     void aimpLibraryFolders()
     {
         QTemporaryDir dir, emptyPrefix;

@@ -52,6 +52,7 @@ private:
         QString name;
         int tracks = -1;
         QString where;
+        QDateTime modified;
         bool checked = true;
         int aimpIndex = -1;                     // into m_session.playlists
         Migration::PhonePlaylistFile phoneFile;
