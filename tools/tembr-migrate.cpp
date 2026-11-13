@@ -76,7 +76,8 @@ int usage()
         "  tembr-migrate aimp    [--profile N] [--all] [--library DIR] [--out DIR] [--format FMT]\n"
         "      AIMP для Windows на этом компьютере (Wine, Bottles, ...). По умолчанию — открытые\n"
         "      вкладки AIMP в его порядке; --all добавляет старые копии из папки PLS;\n"
-        "      --library ищет по имени файлы, которых нет на старом месте.\n\n"
+        "      --library DIR[;DIR] ищет по имени файлы, которых нет на старом месте\n"
+        "      (по умолчанию — папки фонотеки AIMP).\n\n"
         "  tembr-migrate phones\n"
         "      Подключённые телефоны: «Передача файлов» (MTP) и USB-отладка (adb).\n\n"
         "  tembr-migrate android [--device N | --folder PATH] [--library DIR] [--copy-to DIR]\n"
@@ -122,6 +123,26 @@ void loadPlayerRemaps()
     PathResolver::setRemaps(remaps);
 }
 
+// --library DIR[;DIR...], or else the folders of AIMP's music library.
+Relocator::Index buildLibrary(const Args &a, const AimpProfile &profile)
+{
+    QStringList roots;
+    if (a.has("library")) {
+        for (const QString &d : a.value("library").split(QLatin1Char(';'), Qt::SkipEmptyParts))
+            roots << d.trimmed();
+    } else if (!profile.dir.isEmpty()) {
+        roots = aimpLibraryFolders(profile);
+        if (!roots.isEmpty())
+            out(QStringLiteral("Музыка — папки фонотеки AIMP (другие: --library)."));
+    }
+    if (roots.isEmpty())
+        return {};
+    out(QStringLiteral("Индексирую музыку в %1…").arg(roots.join(QStringLiteral(", "))));
+    Relocator::Index index = Relocator::build(roots);
+    out(QStringLiteral("  %1 аудиофайлов").arg(index.files));
+    return index;
+}
+
 int runAimp(const Args &a)
 {
     const QList<AimpProfile> profiles = findAimpProfiles();
@@ -137,12 +158,7 @@ int runAimp(const Args &a)
         return usage();
 
     const AimpSession session = readAimpSession(profiles[index]);
-    Relocator::Index library;
-    if (a.has("library")) {
-        out(QStringLiteral("Индексирую музыку в %1…").arg(a.value("library")));
-        library = Relocator::build(a.value("library"));
-        out(QStringLiteral("  %1 аудиофайлов").arg(library.files));
-    }
+    const Relocator::Index library = buildLibrary(a, profiles[index]);
     const QString format = a.value("format").isEmpty() ? QStringLiteral("xspf") : a.value("format");
     out(QStringLiteral("\nПлейлисты профиля [%1]:").arg(index));
     int total = 0, found = 0;
@@ -231,14 +247,11 @@ int runAndroid(const Args &a)
         return 1;
     }
 
-    Relocator::Index library;
+    const QList<AimpProfile> profiles = findAimpProfiles();
+    const Relocator::Index library = buildLibrary(a, profiles.isEmpty() ? AimpProfile() : profiles.first());
     PhoneImportOptions options;
-    if (a.has("library")) {
-        out(QStringLiteral("Индексирую музыку в %1…").arg(a.value("library")));
-        library = Relocator::build(a.value("library"));
-        out(QStringLiteral("  %1 аудиофайлов").arg(library.files));
+    if (library.files > 0)
         options.library = &library;
-    }
     if (a.has("copy-to") && a.has("out"))
         options.copyMissingTo = a.value("copy-to");
     else if (a.has("copy-to"))

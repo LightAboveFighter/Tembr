@@ -89,13 +89,23 @@ MigrationDialog::MigrationDialog(QWidget *parent)
     QSettings settings;
     auto *musicBox = new QGroupBox(QStringLiteral("Музыка"));
     auto *musicGrid = new QGridLayout(musicBox);
+    // Where the music is: what was used last, else AIMP's own music library
+    // folders, else ~/Music if there is one.
     QString library = settings.value(QStringLiteral("migration/library"),
                                      settings.value(QStringLiteral("paths/lastSearchDir"))).toString();
-    if (library.isEmpty())
+    if (library.isEmpty()) {
+        for (const auto &p : Migration::findAimpProfiles()) {
+            library = Migration::aimpLibraryFolders(p).join(QStringLiteral("; "));
+            if (!library.isEmpty())
+                break;
+        }
+    }
+    if (library.isEmpty() && QFileInfo(QStandardPaths::writableLocation(QStandardPaths::MusicLocation)).isDir())
         library = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
     m_library = new QLineEdit(library);
     m_library->setPlaceholderText(QStringLiteral("не искать"));
-    m_library->setToolTip(QStringLiteral("Треки, которых нет на прежнем месте, ищутся здесь по имени файла"));
+    m_library->setToolTip(QStringLiteral("Треки, которых нет на прежнем месте, ищутся здесь по имени файла.\n"
+                                         "Несколько папок — через точку с запятой."));
     m_copy = new QCheckBox(QStringLiteral("Копировать с телефона треки, которых нет на компьютере, в:"));
     m_copy->setChecked(settings.value(QStringLiteral("migration/copy"), false).toBool());
     m_copyTo = new QLineEdit(settings.value(QStringLiteral("migration/copyTo"), library).toString());
@@ -417,9 +427,14 @@ void MigrationDialog::startImport()
         MigrationResult r;
         r.replaceSameName = replace;
         Relocator::Index index;
-        if (!library.isEmpty() && QFileInfo(library).isDir()) {
-            report(0, 0, QStringLiteral("Индексирую музыку в %1…").arg(library));
-            index = Relocator::build(library);
+        QStringList roots;
+        for (const QString &dir : library.split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+            if (QFileInfo(dir.trimmed()).isDir())
+                roots << dir.trimmed();
+        }
+        if (!roots.isEmpty()) {
+            report(0, 0, QStringLiteral("Индексирую музыку в %1…").arg(roots.join(QStringLiteral(", "))));
+            index = Relocator::build(roots);
         }
         int total = 0, found = 0;
         Migration::PhoneImportStats phoneStats;

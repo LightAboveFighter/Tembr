@@ -127,6 +127,57 @@ private slots:
         QVERIFY(!s.playlists[1].open);
     }
 
+    void aimpLibraryFolders()
+    {
+        QTemporaryDir dir, emptyPrefix;
+        qputenv("WINEPREFIX", emptyPrefix.path().toUtf8());   // no dosdevices: Z: is "/"
+        const Migration::AimpProfile profile{QStringLiteral("test"), dir.path()};
+        writeUtf16(profile.iniPath(),
+                   QStringLiteral("[MusicLibrary.TAIMPMLLocalDataStorage.SearchOptions]\r\nSearchPathCount=2\r\n"
+                                  "SearchPath0=Z:\\media\\Music\\\r\nSearchPath1=Z:\\home\\me\\Аудио\\\r\n"
+                                  "ExcludedPathCount=1\r\nExcludedPath0=Z:\\media\\Music\\Podcasts\\\r\n"));
+        QStringList excluded;
+        QCOMPARE(Migration::aimpLibraryFolders(profile, &excluded),
+                 (QStringList{QStringLiteral("/media/Music"), QStringLiteral("/home/me/Аудио")}));
+        QCOMPARE(excluded, QStringList{QStringLiteral("/media/Music/Podcasts")});
+        qunsetenv("WINEPREFIX");
+    }
+
+    // Another phone: storage names we have no pattern for (Turkish; the card sorts
+    // first), no Music folder, and a track
+    // the playlist says is in internal storage that actually is on the card.
+    void otherPhoneLayout()
+    {
+        QTemporaryDir gvfs, copyTo;
+        const QString dev = gvfs.filePath(QStringLiteral("mtp:host=SAMSUNG_Android_R58M"));
+        const QString sd = dev + QStringLiteral("/Bellek kartı");
+        const QString internal = dev + QStringLiteral("/Dahili paylaşılan depolama");
+        for (const char *d : {"Alarms", "Ringtones", "Download", "Android"})
+            QDir().mkpath(internal + QLatin1Char('/') + QLatin1String(d));
+        QDir().mkpath(sd + QStringLiteral("/Android"));
+        writeFile(sd + QStringLiteral("/Lieder/Band - Song.mp3"), "on the card");
+        // No "Music" folder anywhere; playlist in Documents.
+        writeFile(internal + QStringLiteral("/Documents/AIMP/Mix.m3u"),
+                  "#EXTM3U\n/storage/emulated/0/Lieder/Band - Song.mp3\n");
+
+        const auto sources = Migration::mtpSources(gvfs.path());
+        QCOMPARE(sources.size(), 1);
+        const auto storages = sources[0]->storages();
+        const auto primary = std::find_if(storages.cbegin(), storages.cend(), [](const auto &s) { return s.primary; });
+        QCOMPARE(primary->name, QStringLiteral("Dahili paylaşılan depolama"));   // by its system folders
+
+        const auto files = sources[0]->findPlaylists();
+        QCOMPARE(files.size(), 1);
+        QCOMPARE(files[0].path, QStringLiteral("Documents/AIMP/Mix.m3u"));
+        Migration::PhoneImportOptions opt;
+        opt.copyMissingTo = copyTo.path();
+        PlaylistData data;
+        Migration::PhoneImportStats stats;
+        QVERIFY(Migration::importPhonePlaylist(*sources[0], files[0], opt, data, stats));
+        QCOMPARE(stats.copied, 1);
+        QCOMPARE(data.tracks[0].path, copyTo.filePath(QStringLiteral("Lieder/Band - Song.mp3")));
+    }
+
     void phoneEntries()
     {
         using Migration::PhoneRef;

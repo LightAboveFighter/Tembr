@@ -47,6 +47,10 @@ struct AimpSession
 // with the same name only the newest one.
 AimpSession readAimpSession(const AimpProfile &profile);
 
+// Folders of AIMP's music library ("Local files"): where AIMP looks for music,
+// as local paths. `excluded` gets the excluded folders.
+QStringList aimpLibraryFolders(const AimpProfile &profile, QStringList *excluded = nullptr);
+
 // Loads one playlist; paths are resolved like any AIMP playlist (Wine
 // drives, learned folder moves).
 bool loadAimpPlaylist(const AimpPlaylistInfo &info, PlaylistData &out, QString *error = nullptr);

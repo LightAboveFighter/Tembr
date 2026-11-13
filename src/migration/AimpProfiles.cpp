@@ -1,5 +1,6 @@
 #include "migration/AimpProfiles.h"
 
+#include "core/PathResolver.h"
 #include "core/TextDecode.h"
 
 #include <QDir>
@@ -230,6 +231,27 @@ AimpSession readAimpSession(const AimpProfile &profile)
             session.playingIndex = i;
     }
     return session;
+}
+
+QStringList aimpLibraryFolders(const AimpProfile &profile, QStringList *excluded)
+{
+    const auto opts = readIni(profile.iniPath()).value(QStringLiteral("MusicLibrary.TAIMPMLLocalDataStorage.SearchOptions"));
+    const PathResolver resolver;
+    auto list = [&](const QString &countKey, const QString &itemKey) {
+        QStringList out;
+        const int n = opts.value(countKey).toInt();
+        for (int i = 0; i < n; ++i) {
+            QString p = resolver.resolve(opts.value(itemKey + QString::number(i)));
+            while (p.size() > 1 && p.endsWith(QLatin1Char('/')))
+                p.chop(1);
+            if (!p.isEmpty() && !out.contains(p))
+                out << p;
+        }
+        return out;
+    };
+    if (excluded)
+        *excluded = list(QStringLiteral("ExcludedPathCount"), QStringLiteral("ExcludedPath"));
+    return list(QStringLiteral("SearchPathCount"), QStringLiteral("SearchPath"));
 }
 
 bool loadAimpPlaylist(const AimpPlaylistInfo &info, PlaylistData &out, QString *error)

@@ -275,9 +275,49 @@ private:
 
 bool looksPrimary(const QString &name)
 {
-    static const QRegularExpression re(QStringLiteral("internal|внутр|phone|память|shared|телефон"),
+    static const QRegularExpression re(QStringLiteral("internal|intern|внутр|внутріш|phone|память|shared|телефон"),
                                        QRegularExpression::CaseInsensitiveOption);
     return re.match(name).hasMatch();
+}
+
+// Storage names are localised and vendor specific ("Interner gemeinsamer
+// Speicher", "Card"). Android creates these folders only in internal storage.
+int systemFolderScore(const QString &root)
+{
+    int score = 0;
+    for (const char *dir : {"Alarms", "Notifications", "Ringtones", "Podcasts", "Download", "Android"}) {
+        if (QFileInfo(root + QLatin1Char('/') + QLatin1String(dir)).isDir())
+            ++score;
+    }
+    return score;
+}
+
+void choosePrimary(QList<PhoneStorage> &storages)
+{
+    for (PhoneStorage &s : storages)
+        s.primary = false;
+    if (storages.size() == 1) {
+        storages.first().primary = true;
+        return;
+    }
+    QList<int> byName;
+    for (int i = 0; i < storages.size(); ++i) {
+        if (looksPrimary(storages[i].name))
+            byName << i;
+    }
+    if (byName.size() == 1) {
+        storages[byName.first()].primary = true;
+        return;
+    }
+    int best = 0, bestScore = -1;
+    for (int i = 0; i < storages.size(); ++i) {
+        const int score = systemFolderScore(storages[i].root);
+        if (score > bestScore) {
+            best = i;
+            bestScore = score;
+        }
+    }
+    storages[best].primary = true;
 }
 
 } // namespace
@@ -306,7 +346,6 @@ QList<PhoneSourcePtr> mtpSources(const QString &gvfsDir, QStringList *notes)
             s.key = st.fileName();
             s.name = st.fileName();
             s.root = st.absoluteFilePath();
-            s.primary = looksPrimary(s.name);
             storages.append(s);
         }
         if (storages.isEmpty()) {
@@ -315,8 +354,7 @@ QList<PhoneSourcePtr> mtpSources(const QString &gvfsDir, QStringList *notes)
                                          "режим USB «Передача файлов».").arg(device);
             continue;
         }
-        if (std::none_of(storages.cbegin(), storages.cend(), [](const PhoneStorage &s) { return s.primary; }))
-            storages.first().primary = true;
+        choosePrimary(storages);
         out.append(std::make_shared<FolderSource>(PhoneSource::Kind::Mtp,
                                                   QStringLiteral("%1 (передача файлов)").arg(device), storages));
     }

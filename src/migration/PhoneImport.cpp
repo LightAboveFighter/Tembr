@@ -172,12 +172,17 @@ bool importPhonePlaylist(PhoneSource &source, const PhonePlaylistFile &file, con
                 localPath = dest;   // copied before (same file in another playlist)
                 ++local.copied;
             } else {
+                // The expected storage first, then the others: which MTP storage is
+                // "/storage/emulated/0" is a guess, and SD cards have no id over MTP.
                 QList<int> candidates;
                 if (ref.storage >= 0)
                     candidates << ref.storage;
-                else
-                    for (int s = 0; s < storages.size(); ++s)
-                        candidates << s;
+                if (ref.storage < 0 || source.kind() != PhoneSource::Kind::Adb) {
+                    for (int s = 0; s < storages.size(); ++s) {
+                        if (s != ref.storage)
+                            candidates << s;
+                    }
+                }
                 QString copyError;
                 for (int s : std::as_const(candidates)) {
                     if (source.kind() != PhoneSource::Kind::Adb && !source.exists(s, ref.rel))
