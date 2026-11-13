@@ -1,0 +1,24 @@
+[Desktop Entry]
+Type=Application
+Name=Tembr
+GenericName=Аудиоплеер
+Comment=Лёгкий аудиоплеер
+Exec=tembr %U
+Icon=tembr
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+MimeType=audio/mpeg;audio/flac;audio/ogg;audio/x-vorbis+ogg;audio/opus;audio/mp4;audio/x-wav;audio/x-ape;audio/x-wavpack;audio/x-ms-wma;audio/x-mpegurl;audio/x-scpls;application/xspf+xml;application/x-cue;
+StartupWMClass=tembr
+Actions=PlayPause;Next;Previous;
+
+[Desktop Action PlayPause]
+Name=Воспроизведение / пауза
+Exec=tembr --play-pause
+
+[Desktop Action Next]
+Name=Следующий трек
+Exec=tembr --next
+
+[Desktop Action Previous]
+Name=Предыдущий трек
+Exec=tembr --previous
