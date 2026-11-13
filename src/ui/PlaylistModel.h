@@ -34,6 +34,12 @@ public:
     QString name() const { return m_name; }
     void setName(const QString &name) { m_name = name; }
 
+    // Read-only playlists (Local files) refuse insert/remove/relocate/clear;
+    // their content is replaced as a whole with setTracks().
+    bool isReadOnly() const { return m_readOnly; }
+    void setReadOnly(bool readOnly) { m_readOnly = readOnly; }
+    void setTracks(const TrackList &tracks);
+
     int rowCount(const QModelIndex &parent = {}) const override;
     int columnCount(const QModelIndex &parent = {}) const override;
     QVariant data(const QModelIndex &index, int role) const override;
@@ -73,6 +79,7 @@ private:
     void emitRowChanged(int row);
 
     QString m_name;
+    bool m_readOnly = false;
     TrackList m_tracks;
     QHash<quint64, int> m_rowByUid;
     quint64 m_currentUid = 0;

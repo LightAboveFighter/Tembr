@@ -181,9 +181,29 @@ void PlaylistModel::sort(int column, Qt::SortOrder order)
     emit layoutChanged({}, QAbstractItemModel::VerticalSortHint);
 }
 
+void PlaylistModel::setTracks(const TrackList &tracks)
+{
+    beginResetModel();
+    m_tracks = tracks;
+    for (Track &t : m_tracks) {
+        if (t.uid == 0)
+            t.uid = Track::newUid();
+    }
+    rebuildIndex();
+    endResetModel();
+
+    TrackList toScan;
+    for (const Track &t : std::as_const(m_tracks)) {
+        if (!t.scanned && !t.isUrl())
+            toScan.append(t);
+    }
+    startScan(toScan);
+    emit contentsChanged();
+}
+
 void PlaylistModel::insertTracks(int row, const TrackList &tracks)
 {
-    if (tracks.isEmpty())
+    if (tracks.isEmpty() || m_readOnly)
         return;
     if (row < 0 || row > m_tracks.size())
         row = int(m_tracks.size());
@@ -210,6 +230,8 @@ void PlaylistModel::insertTracks(int row, const TrackList &tracks)
 
 void PlaylistModel::removeRowList(QList<int> rows)
 {
+    if (m_readOnly)
+        return;
     std::sort(rows.begin(), rows.end(), std::greater<int>());
     rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
     rows.erase(std::remove_if(rows.begin(), rows.end(),
@@ -242,6 +264,8 @@ void PlaylistModel::removeMissing()
 
 void PlaylistModel::clear()
 {
+    if (m_readOnly)
+        return;
     beginResetModel();
     m_tracks.clear();
     m_rowByUid.clear();
@@ -259,6 +283,8 @@ void PlaylistModel::setMissing(int row, bool missing)
 
 void PlaylistModel::relocate(const QList<QPair<int, QString>> &moves)
 {
+    if (m_readOnly)
+        return;
     TrackList toScan;
     for (const auto &m : moves) {
         if (m.first < 0 || m.first >= m_tracks.size())

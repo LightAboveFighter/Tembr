@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio/AudioEngine.h"
+#include "core/Track.h"
 #include "ui/SettingsDialog.h"
 
 #include <QFuture>
@@ -18,6 +19,7 @@ class QSplitter;
 class QSystemTrayIcon;
 class QTabWidget;
 class QToolButton;
+class LocalFiles;
 class MprisService;
 class NowPlayingPanel;
 class PlaylistPage;
@@ -51,6 +53,11 @@ private:
     void releaseHotkeys();
 
     PlaylistPage *currentPage() const;
+    PlaylistPage *editablePage();   // current page unless read-only, else another (created if needed)
+    bool refuseReadOnly(PlaylistPage *page);
+    void createLocalPage();
+    void applyLocalScan(const TrackList &tracks);
+    void showLocalFilesSettings();
     PlaylistPage *addPage(const QString &name);
     void closePage(int index);
     void renamePage(int index);
@@ -80,6 +87,8 @@ private:
 
     AudioEngine *m_engine;
     MprisService *m_mpris;
+    LocalFiles *m_localFiles;
+    PlaylistPage *m_localPage = nullptr;   // "Local files": read-only, follows the music folders
     QPointer<PlaylistPage> m_playingPage;
     AppSettings m_settings;
     bool m_quitting = false;

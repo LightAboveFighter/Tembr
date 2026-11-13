@@ -137,7 +137,7 @@ PlaylistPage::PlaylistPage(const QString &name, QWidget *parent)
 
 void PlaylistPage::addPaths(const QStringList &paths, int sourceRow, bool playFirst)
 {
-    if (paths.isEmpty())
+    if (paths.isEmpty() || m_model->isReadOnly())
         return;
     auto *watcher = new QFutureWatcher<TrackList>(this);
     connect(watcher, &QFutureWatcher<TrackList>::finished, this, [this, watcher, sourceRow, playFirst] {
@@ -149,6 +149,18 @@ void PlaylistPage::addPaths(const QStringList &paths, int sourceRow, bool playFi
             emit tracksAdded(row, playFirst);
     });
     watcher->setFuture(QtConcurrent::run([paths] { return MediaCollector::collect(paths); }));
+}
+
+bool PlaylistPage::isReadOnly() const
+{
+    return m_model->isReadOnly();
+}
+
+void PlaylistPage::setReadOnly(bool readOnly)
+{
+    m_model->setReadOnly(readOnly);
+    m_view->setAcceptDrops(!readOnly);
+    m_view->viewport()->setAcceptDrops(!readOnly);
 }
 
 QList<int> PlaylistPage::selectedSourceRows() const
@@ -171,6 +183,8 @@ int PlaylistPage::focusedSourceRow() const
 
 void PlaylistPage::removeSelected()
 {
+    if (m_model->isReadOnly())
+        return;
     const QList<int> rows = selectedSourceRows();
     if (rows.isEmpty())
         return;

@@ -37,6 +37,9 @@ public:
     PlaylistFilterProxy *proxy() const { return m_proxy; }
     PlaylistView *view() const { return m_view; }
 
+    bool isReadOnly() const;
+    void setReadOnly(bool readOnly);   // no drops, no deleting
+
     // Expands folders/playlists in the background, then inserts at sourceRow.
     void addPaths(const QStringList &paths, int sourceRow = -1, bool playFirst = false);
 

@@ -55,6 +55,7 @@ add_executable(tembr
     src/ui/NowPlayingPanel.h src/ui/NowPlayingPanel.cpp
     src/ui/SettingsDialog.h src/ui/SettingsDialog.cpp
     src/ui/HotkeyEdit.h src/ui/HotkeyEdit.cpp
+    src/ui/LocalFilesDialog.h src/ui/LocalFilesDialog.cpp
 )
 target_link_libraries(tembr PRIVATE tembr_core Qt6::Widgets)
 target_compile_definitions(tembr PRIVATE TEMBR_VERSION="${PROJECT_VERSION}")

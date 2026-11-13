@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 
+#include "core/LocalFiles.h"
 #include "core/MediaCollector.h"
 #include "core/MetadataReader.h"
 #include "core/PathResolver.h"
@@ -7,6 +8,7 @@
 #include "core/Relocator.h"
 #include "platform/Mpris.h"
 #include "ui/Icons.h"
+#include "ui/LocalFilesDialog.h"
 #include "ui/NowPlayingPanel.h"
 #include "ui/PlaylistFilterProxy.h"
 #include "ui/PlaylistModel.h"
@@ -108,6 +110,7 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_engine(new AudioEngine(this))
     , m_mpris(new MprisService(m_engine, this))
+    , m_localFiles(new LocalFiles(this))
 {
     setWindowTitle(QStringLiteral("Tembr"));
     PathResolver::setRemaps(loadRemaps());
@@ -148,6 +151,11 @@ MainWindow::MainWindow(QWidget *parent)
     });
     if (!m_mpris->registerOnBus())
         qWarning("MPRIS: could not register on the session bus");
+
+    connect(m_localFiles, &LocalFiles::scanned, this, &MainWindow::applyLocalScan);
+    connect(m_localFiles, &LocalFiles::scanningChanged, this, &MainWindow::updateStats);
+    connect(m_localFiles, &LocalFiles::changedOnDisk, this,
+            [this] { m_localFiles->rescan(m_localPage->model()->tracks()); });
 
     m_settings = AppSettings::load();
     applySettings(m_settings);
@@ -231,17 +239,21 @@ void MainWindow::buildActions()
     pl->addSeparator();
     pl->addAction(QStringLiteral("Найти перемещённые файлы…"), this, &MainWindow::findMovedFiles);
     pl->addAction(QStringLiteral("Удалить выбранные"), this, [this] {
-        if (auto *p = currentPage())
+        if (auto *p = currentPage(); p && !refuseReadOnly(p))
             p->removeSelected();
     });
     pl->addAction(QStringLiteral("Удалить отсутствующие файлы"), this, [this] {
-        if (auto *p = currentPage())
+        if (auto *p = currentPage(); p && !refuseReadOnly(p))
             p->model()->removeMissing();
     });
     pl->addAction(QStringLiteral("Очистить плейлист"), this, [this] {
-        if (auto *p = currentPage())
+        if (auto *p = currentPage(); p && !refuseReadOnly(p))
             p->model()->clear();
     });
+    pl->addSeparator();
+    addItem(pl, QStringLiteral("Обновить локальные файлы"), QKeySequence(Qt::Key_F5), this,
+            [this] { m_localFiles->rescan(m_localPage->model()->tracks()); });
+    pl->addAction(QStringLiteral("Настройки локальных файлов…"), this, &MainWindow::showLocalFilesSettings);
 
     // --- Playback
     QMenu *pb = menuBar()->addMenu(QStringLiteral("&Воспроизведение"));
@@ -588,7 +600,7 @@ PlaylistPage *MainWindow::addPage(const QString &name)
 void MainWindow::closePage(int index)
 {
     auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(index));
-    if (!page)
+    if (!page || refuseReadOnly(page))
         return;
     if (page->model()->rowCount() > 0) {
         QMessageBox box(QMessageBox::Question, windowTitle(),
@@ -607,14 +619,12 @@ void MainWindow::closePage(int index)
     }
     m_tabs->removeTab(index);
     page->deleteLater();
-    if (m_tabs->count() == 0)
-        addPage(QStringLiteral("Плейлист 1"));
 }
 
 void MainWindow::renamePage(int index)
 {
     auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(index));
-    if (!page)
+    if (!page || refuseReadOnly(page))
         return;
     QInputDialog dlg(this);
     dlg.setWindowTitle(QStringLiteral("Переименовать плейлист"));
@@ -633,8 +643,81 @@ void MainWindow::renamePage(int index)
 
 void MainWindow::openPaths(const QStringList &paths)
 {
-    if (auto *page = currentPage())
-        page->addPaths(paths, -1, true);
+    PlaylistPage *page = editablePage();
+    m_tabs->setCurrentWidget(page);
+    page->addPaths(paths, -1, true);
+}
+
+PlaylistPage *MainWindow::editablePage()
+{
+    if (auto *cur = currentPage(); cur && !cur->isReadOnly())
+        return cur;
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        auto *p = qobject_cast<PlaylistPage *>(m_tabs->widget(i));
+        if (p && !p->isReadOnly())
+            return p;
+    }
+    return addPage(QStringLiteral("Плейлист 1"));
+}
+
+bool MainWindow::refuseReadOnly(PlaylistPage *page)
+{
+    if (!page || !page->isReadOnly())
+        return false;
+    statusBar()->showMessage(QStringLiteral("«Локальные файлы» составляются из папок с музыкой автоматически — "
+                                            "папки задаются в «Плейлист → Настройки локальных файлов»."),
+                             6000);
+    return true;
+}
+
+void MainWindow::createLocalPage()
+{
+    m_localPage = addPage(QStringLiteral("Локальные файлы"));
+    m_localPage->setReadOnly(true);
+    const int index = m_tabs->indexOf(m_localPage);
+    m_tabs->setTabIcon(index, Icons::make(Icons::Kind::Note, Theme::iconColor()));
+    m_tabs->setTabToolTip(index, QStringLiteral("Вся музыка из папок фонотеки. Изменить список нельзя — "
+                                                "только папки в настройках локальных файлов."));
+    // Not closable: drop the close button (its side depends on the style).
+    m_tabs->tabBar()->setTabButton(index, QTabBar::RightSide, nullptr);
+    m_tabs->tabBar()->setTabButton(index, QTabBar::LeftSide, nullptr);
+    m_localPage->model()->setTracks(m_localFiles->loadCache());
+}
+
+void MainWindow::applyLocalScan(const TrackList &tracks)
+{
+    PlaylistModel *model = m_localPage->model();
+    // Nothing changed (same entries in the same order): keep the view as it is.
+    const TrackList &now = model->tracks();
+    if (now.size() == tracks.size()
+        && std::equal(now.cbegin(), now.cend(), tracks.cbegin(), [](const Track &a, const Track &b) { return a.uid == b.uid; }))
+        return;
+
+    // Keep the list where the user was looking.
+    PlaylistView *view = m_localPage->view();
+    const QModelIndex top = m_localPage->proxy()->mapToSource(view->indexAt(QPoint(4, 4)));
+    const quint64 topUid = top.isValid() ? model->track(top.row()).uid : 0;
+    model->setTracks(tracks);
+    if (topUid) {
+        const QModelIndex idx = m_localPage->proxy()->mapFromSource(model->index(model->rowOfUid(topUid), 0));
+        if (idx.isValid())
+            view->scrollTo(idx, QAbstractItemView::PositionAtTop);
+    }
+    if (m_localPage == m_playingPage)
+        updateNowPlaying();
+    updateStats();
+}
+
+void MainWindow::showLocalFilesSettings()
+{
+    LocalFilesDialog dlg(m_localFiles->settings(), this);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    const LocalFilesSettings s = dlg.values();
+    if (s == m_localFiles->settings())
+        return;
+    m_localFiles->setSettings(s);
+    m_localFiles->rescan(m_localPage->model()->tracks());
 }
 
 // --- Playback ----------------------------------------------------------------
@@ -795,8 +878,12 @@ void MainWindow::updateStats()
         text += QStringLiteral(" · не найдено %1").arg(missing);
     if (page->proxy()->isFiltering())
         text += QStringLiteral(" · найдено по запросу %1").arg(page->proxy()->rowCount());
+    if (page == m_localPage && m_localFiles->isScanning())
+        text += QStringLiteral(" · обзор папок…");
     if (page->model()->isScanning())
         text += QStringLiteral(" · чтение тегов…");
+    if (page == m_localPage && total == 0 && !m_localFiles->isScanning())
+        text = QStringLiteral("Папки с музыкой не заданы или пусты — «Плейлист → Настройки локальных файлов»");
     m_stats->setText(text);
 }
 
@@ -838,8 +925,16 @@ void MainWindow::showContextMenu(const QPoint &globalPos)
             });
         }
         menu.addSeparator();
-        menu.addAction(QStringLiteral("Удалить из плейлиста"), page, &PlaylistPage::removeSelected);
-        menu.addSeparator();
+        if (!page->isReadOnly()) {
+            menu.addAction(QStringLiteral("Удалить из плейлиста"), page, &PlaylistPage::removeSelected);
+            menu.addSeparator();
+        }
+    }
+    if (page->isReadOnly()) {
+        menu.addAction(QStringLiteral("Обновить"), this, [this] { m_localFiles->rescan(m_localPage->model()->tracks()); });
+        menu.addAction(QStringLiteral("Настройки локальных файлов…"), this, &MainWindow::showLocalFilesSettings);
+        menu.exec(globalPos);
+        return;
     }
     menu.addAction(QStringLiteral("Добавить файлы…"), this, &MainWindow::addFiles);
     menu.addAction(QStringLiteral("Добавить папку…"), this, &MainWindow::addFolder);
@@ -882,8 +977,9 @@ void MainWindow::addFiles()
     if (files.isEmpty())
         return;
     s.setValue(QStringLiteral("lastDir"), QFileInfo(files.first()).absolutePath());
-    if (auto *page = currentPage())
-        page->addPaths(files);
+    PlaylistPage *page = editablePage();
+    m_tabs->setCurrentWidget(page);
+    page->addPaths(files);
 }
 
 void MainWindow::addFolder()
@@ -894,8 +990,9 @@ void MainWindow::addFolder()
     if (dir.isEmpty())
         return;
     s.setValue(QStringLiteral("lastDir"), dir);
-    if (auto *page = currentPage())
-        page->addPaths({dir});
+    PlaylistPage *page = editablePage();
+    m_tabs->setCurrentWidget(page);
+    page->addPaths({dir});
 }
 
 void MainWindow::openPlaylists()
@@ -928,7 +1025,7 @@ void MainWindow::openPlaylists()
         }
         // Reuse the current tab if it is empty, as AIMP does with a fresh playlist.
         PlaylistPage *page = currentPage();
-        if (first || !page || page->model()->rowCount() > 0)
+        if (first || !page || page->isReadOnly() || page->model()->rowCount() > 0)
             page = addPage(data.name);
         page->model()->setName(data.name);
         m_tabs->setTabText(m_tabs->indexOf(page), data.name);
@@ -982,6 +1079,8 @@ void MainWindow::findMovedFiles()
         QList<QPair<QString, QString>> moves;
         for (int i = 0; i < m_tabs->count(); ++i) {
             auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(i));
+            if (page->isReadOnly())
+                continue;   // Local files follow the folders by themselves
             QList<QPair<int, QString>> pageMoves;
             const TrackList &tracks = page->model()->tracks();
             for (int row = 0; row < tracks.size(); ++row) {
@@ -1053,20 +1152,32 @@ void MainWindow::saveSession()
     for (const QString &old : QDir(dir).entryList({QStringLiteral("*.xspf")}, QDir::Files))
         QFile::remove(dir + QLatin1Char('/') + old);
 
+    // Tab indexes count every tab; files are written for ordinary playlists only
+    // (Local files are rebuilt from the folders, with their own cache).
     int playingTab = -1;
+    int files = 0;
     for (int i = 0; i < m_tabs->count(); ++i) {
         auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(i));
         if (page == m_playingPage)
             playingTab = i;
-        const QString file = QStringLiteral("%1/%2.xspf").arg(dir).arg(i, 3, 10, QLatin1Char('0'));
+        if (page == m_localPage)
+            continue;
+        const QString file = QStringLiteral("%1/%2.xspf").arg(dir).arg(files++, 3, 10, QLatin1Char('0'));
         PlaylistIO::save(file, {page->model()->name(), page->model()->tracks()});
     }
+    m_localFiles->saveCache(m_localPage->model()->tracks());
 
     QSettings s;
-    s.setValue(QStringLiteral("session/count"), m_tabs->count());
+    s.setValue(QStringLiteral("session/version"), 2);
+    s.setValue(QStringLiteral("session/count"), files);
+    s.setValue(QStringLiteral("session/localTab"), m_tabs->indexOf(m_localPage));
     s.setValue(QStringLiteral("session/current"), m_tabs->currentIndex());
     s.setValue(QStringLiteral("session/playingTab"), playingTab);
     s.setValue(QStringLiteral("session/playingRow"), m_playingPage ? m_playingPage->model()->currentRow() : -1);
+    // Rows of Local files change with the folders: remember the file.
+    const int playingRow = m_playingPage ? m_playingPage->model()->currentRow() : -1;
+    s.setValue(QStringLiteral("session/playingPath"),
+               playingRow >= 0 ? m_playingPage->model()->track(playingRow).path : QString());
     s.setValue(QStringLiteral("volume"), m_volume->value());
     s.setValue(QStringLiteral("searchField"), m_searchField->currentIndex());
     s.setValue(QStringLiteral("geometry"), saveGeometry());
@@ -1086,6 +1197,7 @@ void MainWindow::restoreSession()
     m_searchField->setCurrentIndex(s.value(QStringLiteral("searchField"), 0).toInt());
     m_headerState = s.value(QStringLiteral("header")).toByteArray();
 
+    createLocalPage();
     const int count = s.value(QStringLiteral("session/count"), 0).toInt();
     for (int i = 0; i < count; ++i) {
         PlaylistData data;
@@ -1095,15 +1207,35 @@ void MainWindow::restoreSession()
         PlaylistPage *page = addPage(data.name.isEmpty() ? QStringLiteral("Плейлист %1").arg(i + 1) : data.name);
         page->model()->insertTracks(-1, data.tracks);
     }
-    if (m_tabs->count() == 0)
+    if (m_tabs->count() == 1)
         addPage(QStringLiteral("Плейлист 1"));
-    m_tabs->setCurrentIndex(qBound(0, s.value(QStringLiteral("session/current"), 0).toInt(), m_tabs->count() - 1));
+
+    // Sessions saved before Local files existed had no such tab: it goes first
+    // and every saved index moves by one.
+    const bool oldSession = s.value(QStringLiteral("session/version"), 1).toInt() < 2;
+    const int shift = oldSession ? 1 : 0;
+    const int localTab = oldSession ? 0 : s.value(QStringLiteral("session/localTab"), 0).toInt();
+    m_tabs->tabBar()->moveTab(m_tabs->indexOf(m_localPage), qBound(0, localTab, m_tabs->count() - 1));
+    m_tabs->setCurrentIndex(qBound(0, s.value(QStringLiteral("session/current"), 0).toInt() + shift, m_tabs->count() - 1));
 
     // Mark the last played track so that Play continues from it.
-    const int playingTab = s.value(QStringLiteral("session/playingTab"), -1).toInt();
-    const int playingRow = s.value(QStringLiteral("session/playingRow"), -1).toInt();
-    if (auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(playingTab));
-        page && playingRow >= 0 && playingRow < page->model()->rowCount()) {
+    int playingTab = s.value(QStringLiteral("session/playingTab"), -1).toInt();
+    if (playingTab >= 0)
+        playingTab += shift;
+    int playingRow = s.value(QStringLiteral("session/playingRow"), -1).toInt();
+    auto *playing = qobject_cast<PlaylistPage *>(m_tabs->widget(playingTab));
+    if (playing && playing == m_localPage) {
+        const QString path = s.value(QStringLiteral("session/playingPath")).toString();
+        const TrackList &tracks = playing->model()->tracks();
+        playingRow = -1;
+        for (int i = 0; i < tracks.size() && !path.isEmpty(); ++i) {
+            if (tracks[i].path == path) {
+                playingRow = i;
+                break;
+            }
+        }
+    }
+    if (auto *page = playing; page && playingRow >= 0 && playingRow < page->model()->rowCount()) {
         m_playingPage = page;
         page->model()->setCurrent(page->model()->track(playingRow).uid);
         page->scrollToSourceRow(playingRow);
@@ -1112,6 +1244,8 @@ void MainWindow::restoreSession()
     updateStats();
     if (auto *page = currentPage())
         page->view()->setFocus();
+    // Bring Local files up to date with the folders (the cache was shown meanwhile).
+    m_localFiles->rescan(m_localPage->model()->tracks());
 }
 
 void MainWindow::closeEvent(QCloseEvent *e)
