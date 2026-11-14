@@ -22,6 +22,7 @@ class QToolButton;
 class LocalFiles;
 class MprisService;
 class NowPlayingPanel;
+class TrackOsd;
 class PlaylistPage;
 
 class MainWindow : public QMainWindow
@@ -29,6 +30,7 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    ~MainWindow() override;
 
     // Files given on the command line: added to the current playlist and played.
     void openPaths(const QStringList &paths);
@@ -116,6 +118,7 @@ private:
     QAction *m_actQuit = nullptr;
 
     QSystemTrayIcon *m_tray = nullptr;
+    TrackOsd *m_osd = nullptr;   // a window of its own (no parent)
     QMenu *m_trayMenu = nullptr;
     QAction *m_trayTitle = nullptr;
 

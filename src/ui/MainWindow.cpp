@@ -15,6 +15,7 @@
 #include "ui/PlaylistModel.h"
 #include "ui/PlaylistPage.h"
 #include "ui/Theme.h"
+#include "ui/TrackOsd.h"
 #include "ui/TrackInfoDialog.h"
 
 #include <QAction>
@@ -112,6 +113,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_engine(new AudioEngine(this))
     , m_mpris(new MprisService(m_engine, this))
     , m_localFiles(new LocalFiles(this))
+    , m_osd(new TrackOsd)
 {
     setWindowTitle(QStringLiteral("Tembr"));
     PathResolver::setRemaps(loadRemaps());
@@ -424,8 +426,14 @@ void MainWindow::refreshIcons()
 
 // --- Settings, tray ------------------------------------------------------------
 
+MainWindow::~MainWindow()
+{
+    delete m_osd;
+}
+
 void MainWindow::applySettings(const AppSettings &s)
 {
+    m_osd->setSettings(s.osd);
     if (Theme::current() != s.theme || !qApp->property("tembrThemeApplied").toBool()) {
         Theme::apply(s.theme);
         qApp->setProperty("tembrThemeApplied", true);
@@ -594,8 +602,10 @@ PlaylistPage *MainWindow::addPage(const QString &name)
     connect(page->model(), &QAbstractItemModel::dataChanged, this,
             [this, page](const QModelIndex &tl, const QModelIndex &br) {
                 const int cur = page->model()->currentRow();
-                if (page == m_playingPage && cur >= tl.row() && cur <= br.row())
+                if (page == m_playingPage && cur >= tl.row() && cur <= br.row()) {
                     updateNowPlaying();
+                    m_osd->refresh(page->model()->track(cur), m_engine->durationMs());   // tags just read
+                }
             });
     return page;
 }
@@ -751,6 +761,9 @@ void MainWindow::playRow(PlaylistPage *page, int row)
     page->model()->setMissing(row, false);
     m_engine->play();
     updateNowPlaying();
+    // The title on screen when it cannot be seen in the window (AIMP's OSD).
+    if (TrackOsd::wanted(m_settings.osd.when, isMinimized(), isVisible(), isActiveWindow()))
+        m_osd->showTrack(page->model()->track(row), m_engine->durationMs());
 }
 
 void MainWindow::playOrResume()

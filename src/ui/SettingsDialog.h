@@ -2,12 +2,14 @@
 
 #include "platform/GlobalHotkeys.h"
 #include "ui/Theme.h"
+#include "ui/TrackOsd.h"
 
 #include <QDialog>
 #include <QHash>
 
 class QCheckBox;
 class QComboBox;
+class QSpinBox;
 class HotkeyEdit;
 
 struct AppSettings
@@ -17,6 +19,7 @@ struct AppSettings
     bool closeToTray = false;
     GlobalHotkeys::Bindings hotkeys;
     bool releaseHotkeysOnExit = true;   // keys are only grabbed while Tembr runs
+    TrackOsd::Settings osd;             // track title on screen when the track changes
 
     QStringList droppedHotkeys;   // unsafe stored bindings ignored by load()
 
@@ -36,6 +39,9 @@ private:
     QCheckBox *m_tray;
     QCheckBox *m_closeToTray;
     QCheckBox *m_releaseKeys;
+    QComboBox *m_osdWhen;
+    QComboBox *m_osdWhere;
+    QSpinBox *m_osdSeconds;
     QHash<GlobalHotkeys::Action, HotkeyEdit *> m_keys;
 
     void tryAccept();
