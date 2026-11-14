@@ -1,5 +1,6 @@
 #include "core/MetadataReader.h"
 
+#include "core/FileTimes.h"
 #include "core/MediaOpen.h"
 
 #include <QDir>
@@ -81,6 +82,9 @@ Track read(Track t)
             return t;
         }
         t.fileSize = fi.size();
+        t.modifiedMs = FileTimes::modifiedMs(fi);
+        if (t.addedMs == 0)
+            t.addedMs = FileTimes::addedMs(fi);
     }
 
     FormatContext fc;

@@ -35,6 +35,10 @@ struct Track
     int sampleRate = 0;
     int channels = 0;
     qint64 fileSize = 0;
+    // Dates, ms since the epoch (0 = unknown). `addedMs` is when the file
+    // appeared on this device (see FileTimes::addedMs), `modifiedMs` its mtime.
+    qint64 addedMs = 0;
+    qint64 modifiedMs = 0;
 
     bool scanned = false;       // metadata has been read from the file
     bool missing = false;       // file could not be opened

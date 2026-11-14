@@ -160,6 +160,20 @@ private slots:
         QTRY_VERIFY(!m.isScanning());
         QCOMPARE(m.track(0).path, QStringLiteral("/nonexistent/new/a.mp3"));
     }
+
+    // Choosing a sort counts even when there is nothing to reorder yet
+    // (Local files remember it before the first scan is in).
+    void sortChoiceCountsForTinyLists()
+    {
+        PlaylistModel m;
+        QSignalSpy sorted(&m, &PlaylistModel::sorted);
+        m.sort(PlaylistModel::ColAdded, Qt::DescendingOrder);
+        QCOMPARE(sorted.count(), 1);
+        m.insertTracks(-1, make({QStringLiteral("a")}));
+        m.sort(PlaylistModel::ColArtist, Qt::AscendingOrder);
+        QCOMPARE(sorted.count(), 2);
+        QCOMPARE(sorted.last().at(0).toInt(), int(PlaylistModel::ColArtist));
+    }
 };
 
 QTEST_MAIN(TestPlaylistModel)

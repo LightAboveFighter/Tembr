@@ -114,7 +114,12 @@ PlaylistPage::PlaylistPage(const QString &name, QWidget *parent)
     header->resizeSection(PlaylistModel::ColGenre, 90);
     header->resizeSection(PlaylistModel::ColDuration, 60);
     header->resizeSection(PlaylistModel::ColFormat, 130);
+    const int dateWidth = header->fontMetrics().horizontalAdvance(QStringLiteral("00.00.0000 00:00")) + 24;
+    header->resizeSection(PlaylistModel::ColAdded, dateWidth);
+    header->resizeSection(PlaylistModel::ColModified, dateWidth);
     header->setSectionHidden(PlaylistModel::ColPath, true);
+    header->setSectionHidden(PlaylistModel::ColAdded, true);
+    header->setSectionHidden(PlaylistModel::ColModified, true);
     // Sorting reorders the playlist, so a lingering arrow would be misleading
     // once tracks are added; show it only right after a click.
     connect(header, &QHeaderView::sortIndicatorChanged, this, [header] { header->setSortIndicatorShown(true); });

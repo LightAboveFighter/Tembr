@@ -35,6 +35,7 @@
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
+#include <QActionGroup>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -590,12 +591,16 @@ PlaylistPage *MainWindow::currentPage() const
 
 PlaylistPage *MainWindow::addPage(const QString &name)
 {
-    if (auto *cur = currentPage())
+    if (auto *cur = currentPage()) {
         m_headerState = cur->view()->horizontalHeader()->saveState();
+        m_headerColumns = PlaylistModel::ColumnCount;
+    }
 
     auto *page = new PlaylistPage(name, m_tabs);
-    if (!m_headerState.isEmpty())
-        page->view()->horizontalHeader()->restoreState(m_headerState);
+    if (!m_headerState.isEmpty() && page->view()->horizontalHeader()->restoreState(m_headerState)) {
+        for (int col = m_headerColumns; col < PlaylistModel::ColumnCount; ++col)
+            page->view()->horizontalHeader()->setSectionHidden(col, true);
+    }
     page->view()->horizontalHeader()->setSortIndicatorShown(false);
     m_tabs->addTab(page, name);
 
@@ -727,13 +732,49 @@ void MainWindow::createLocalPage()
     // Not closable: drop the close button (its side depends on the style).
     m_tabs->tabBar()->setTabButton(index, QTabBar::RightSide, nullptr);
     m_tabs->tabBar()->setTabButton(index, QTabBar::LeftSide, nullptr);
-    m_localPage->model()->setTracks(m_localFiles->loadCache());
+    m_localPage->model()->setTracks(m_localFiles->loadCache());   // saved in its order
+    // Sorting by a column header is remembered too, as in AIMP.
+    connect(m_localPage->model(), &PlaylistModel::sorted, this, [this](int column, Qt::SortOrder order) {
+        m_localSortColumn = column;
+        m_localSortOrder = order;
+        QSettings s;
+        s.setValue(QStringLiteral("localFiles/sortColumn"), column);
+        s.setValue(QStringLiteral("localFiles/sortOrder"), int(order));
+    });
+    // New files are sorted before their tags are read; a sort by tags is
+    // applied again once they are in.
+    connect(m_localPage->model(), &PlaylistModel::contentsChanged, this, [this] {
+        PlaylistModel *model = m_localPage->model();
+        if (!m_localResort || model->isScanning())
+            return;
+        m_localResort = false;
+        if (m_localSortColumn >= 0)
+            model->sort(m_localSortColumn, m_localSortOrder);
+    });
 }
 
-void MainWindow::applyLocalScan(const TrackList &tracks)
+void MainWindow::setLocalSort(int column, Qt::SortOrder order)
+{
+    if (column >= 0) {
+        m_localPage->model()->sort(column, order);   // stored via sorted()
+        return;
+    }
+    m_localSortColumn = -1;
+    QSettings().setValue(QStringLiteral("localFiles/sortColumn"), -1);
+    m_localFiles->rescan(m_localPage->model()->tracks());   // comes back in folder order
+}
+
+void MainWindow::applyLocalScan(const TrackList &found)
 {
     PlaylistModel *model = m_localPage->model();
-    // Nothing changed (same entries in the same order, no file changed):
+    TrackList tracks = found;   // in folder order
+    TrackSort::Key key;
+    bool byTags = false;
+    if (PlaylistModel::sortKey(m_localSortColumn, &key)) {
+        TrackSort::sort(tracks, key, m_localSortOrder);
+        byTags = key != TrackSort::Key::Added && key != TrackSort::Key::Modified && key != TrackSort::Key::Path;
+    }
+    // Nothing changed (same entries, files and dates, in the same order):
     // keep the view as it is.
     if (LocalLibrary::sameList(model->tracks(), tracks))
         return;
@@ -743,6 +784,7 @@ void MainWindow::applyLocalScan(const TrackList &tracks)
     const QModelIndex top = m_localPage->proxy()->mapToSource(view->indexAt(QPoint(4, 4)));
     const quint64 topUid = top.isValid() ? model->track(top.row()).uid : 0;
     model->setTracks(tracks);
+    m_localResort = byTags && std::any_of(tracks.cbegin(), tracks.cend(), [](const Track &t) { return !t.scanned; });
     if (topUid) {
         const QModelIndex idx = m_localPage->proxy()->mapFromSource(model->index(model->rowOfUid(topUid), 0));
         if (idx.isValid())
@@ -1022,6 +1064,21 @@ void MainWindow::showContextMenu(const QPoint &globalPos)
         menu.addSeparator();
     }
     if (page->isReadOnly()) {
+        QMenu *sortMenu = menu.addMenu(QStringLiteral("Сортировка"));
+        auto *group = new QActionGroup(sortMenu);
+        auto sortItem = [&](const QString &text, int column, Qt::SortOrder order) {
+            QAction *a = sortMenu->addAction(text, this, [this, column, order] { setLocalSort(column, order); });
+            a->setCheckable(true);
+            a->setChecked(m_localSortColumn == column && (column < 0 || m_localSortOrder == order));
+            group->addAction(a);
+        };
+        sortItem(QStringLiteral("По папкам"), -1, Qt::AscendingOrder);
+        sortMenu->addSeparator();
+        sortItem(QStringLiteral("Сначала недавно добавленные"), PlaylistModel::ColAdded, Qt::DescendingOrder);
+        sortItem(QStringLiteral("Сначала давно добавленные"), PlaylistModel::ColAdded, Qt::AscendingOrder);
+        sortMenu->addSeparator();
+        sortItem(QStringLiteral("Сначала недавно изменённые"), PlaylistModel::ColModified, Qt::DescendingOrder);
+        sortItem(QStringLiteral("Сначала давно изменённые"), PlaylistModel::ColModified, Qt::AscendingOrder);
         menu.addAction(QStringLiteral("Обновить"), this, [this] { m_localFiles->rescan(m_localPage->model()->tracks()); });
         menu.addAction(QStringLiteral("Настройки локальных файлов…"), this, &MainWindow::showLocalFilesSettings);
         menu.exec(globalPos);
@@ -1473,6 +1530,7 @@ void MainWindow::saveSession(SaveScope scope)
     s.setValue(QStringLiteral("splitter"), m_splitter->saveState());
     if (auto *page = currentPage())
         s.setValue(QStringLiteral("header"), page->view()->horizontalHeader()->saveState());
+    s.setValue(QStringLiteral("headerColumns"), int(PlaylistModel::ColumnCount));
 }
 
 void MainWindow::restoreSession()
@@ -1485,6 +1543,10 @@ void MainWindow::restoreSession()
     m_mpris->setVolume(m_volume->value() / 100.0);
     m_searchField->setCurrentIndex(s.value(QStringLiteral("searchField"), 0).toInt());
     m_headerState = s.value(QStringLiteral("header")).toByteArray();
+    m_headerColumns = s.value(QStringLiteral("headerColumns"), 10).toInt();   // 10: before the date columns
+    m_localSortColumn = s.value(QStringLiteral("localFiles/sortColumn"), -1).toInt();
+    m_localSortOrder = s.value(QStringLiteral("localFiles/sortOrder"), 0).toInt() == 1 ? Qt::DescendingOrder
+                                                                                       : Qt::AscendingOrder;
 
     createLocalPage();
     const int count = s.value(QStringLiteral("session/count"), 0).toInt();

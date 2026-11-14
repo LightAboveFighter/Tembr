@@ -1,5 +1,6 @@
 #include "core/LocalFiles.h"
 
+#include "core/FileTimes.h"
 #include "core/MediaCollector.h"
 #include "core/PathResolver.h"
 #include "core/PlaylistIO.h"
@@ -143,22 +144,31 @@ TrackList LocalLibrary::scan(const LocalFilesSettings &settings, const TrackList
     TrackList out;
     out.reserve(found.size());
     for (Track &t : found) {
+        const QFileInfo fi(t.path);
+        const qint64 modified = FileTimes::modifiedMs(fi);
         const auto it = byKey.constFind(trackKey(t));
-        if (it != byKey.constEnd()) {
-            if (!it->scanned) {
-                out.append(*it);   // tags not read yet: the list is reading them
-                continue;
-            }
-            if (!it->missing && (it->isCueTrack() || it->fileSize == QFileInfo(t.path).size())) {
-                out.append(*it);   // unchanged: keep uid and tags
-                continue;
-            }
+        if (it == byKey.constEnd()) {   // new
+            t.addedMs = FileTimes::addedMs(fi);
+            t.modifiedMs = modified;
+            out.append(t);
+            continue;
+        }
+        // Retagging may keep the size, so the mtime counts too (0: cache
+        // written before dates were kept).
+        const bool unchanged = !it->missing && (it->isCueTrack() || it->fileSize == fi.size())
+                               && (it->modifiedMs == 0 || it->modifiedMs == modified);
+        if (!it->scanned || unchanged) {
+            out.append(*it);   // tags not read yet (the list is reading them), or unchanged: keep them
+        } else {
             // Changed (or back after being missing): same entry, tags read
             // again. The new size marks it as changed for sameList().
-            t.uid = it->uid;
-            t.fileSize = QFileInfo(t.path).size();
+            t.fileSize = fi.size();
+            out.append(t);
         }
-        out.append(t);
+        Track &kept = out.last();
+        kept.uid = it->uid;
+        kept.addedMs = it->addedMs > 0 ? it->addedMs : FileTimes::addedMs(fi);   // first seen stays
+        kept.modifiedMs = modified;
     }
     return out;
 }
@@ -169,7 +179,8 @@ bool LocalLibrary::sameList(const TrackList &shown, const TrackList &scanned)
         return false;
     for (int i = 0; i < shown.size(); ++i) {
         const Track &n = scanned.at(i);
-        if (n.uid != shown.at(i).uid || (!n.scanned && n.fileSize > 0))
+        const Track &o = shown.at(i);
+        if (n.uid != o.uid || n.addedMs != o.addedMs || n.modifiedMs != o.modifiedMs || (!n.scanned && n.fileSize > 0))
             return false;
     }
     return true;
