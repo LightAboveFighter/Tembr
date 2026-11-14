@@ -22,6 +22,7 @@
 #include <QSpinBox>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QTabWidget>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -197,14 +198,29 @@ SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
     connect(buttons, &QDialogButtonBox::accepted, this, &SettingsDialog::tryAccept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
+    // Tabs: all of it on one page was taller than a 1080p screen, and Qt then
+    // squeezed the hotkey fields until nothing could be read in them.
+    auto page = [](std::initializer_list<QWidget *> widgets) {
+        auto *w = new QWidget;
+        auto *l = new QVBoxLayout(w);
+        for (QWidget *x : widgets)
+            l->addWidget(x);
+        l->addStretch();
+        return w;
+    };
+    auto *general = page({look, tray, install});
+    general->layout()->setAlignment(install, Qt::AlignLeft);
+    auto *tabs = new QTabWidget;
+    tabs->addTab(general, QStringLiteral("Основные"));
+    tabs->addTab(page({osd}), QStringLiteral("Название трека"));
+    tabs->addTab(page({keys}), QStringLiteral("Горячие клавиши"));
+
     auto *layout = new QVBoxLayout(this);
-    layout->addWidget(look);
-    layout->addWidget(tray);
-    layout->addWidget(osd);
-    layout->addWidget(keys);
-    layout->addWidget(install, 0, Qt::AlignLeft);
-    layout->addStretch();
+    layout->addWidget(tabs);
     layout->addWidget(buttons);
+    // The layout's own minimum ignores how tall the wrapped notes get, so a
+    // shorter window squeezed the rows; never go below what the content needs.
+    setMinimumHeight(layout->totalHeightForWidth(minimumWidth()));
 }
 
 void SettingsDialog::tryAccept()
