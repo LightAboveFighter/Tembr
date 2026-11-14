@@ -59,6 +59,7 @@ add_executable(tembr
     src/ui/NowPlayingPanel.h src/ui/NowPlayingPanel.cpp
     src/ui/SettingsDialog.h src/ui/SettingsDialog.cpp
     src/ui/HotkeyEdit.h src/ui/HotkeyEdit.cpp
+    src/ui/TrackOsd.h src/ui/TrackOsd.cpp
     src/ui/LocalFilesDialog.h src/ui/LocalFilesDialog.cpp
     src/ui/MigrationDialog.h src/ui/MigrationDialog.cpp
 )
@@ -87,6 +88,10 @@ if(TEMBR_BUILD_TESTS)
     target_link_libraries(test_hotkeyedit PRIVATE tembr_core Qt6::Widgets Qt6::Test)
     add_test(NAME test_hotkeyedit COMMAND test_hotkeyedit)
     set_tests_properties(test_hotkeyedit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(test_osd tests/test_osd.cpp src/ui/TrackOsd.cpp src/ui/TrackOsd.h src/ui/Theme.cpp src/ui/Theme.h)
+    target_link_libraries(test_osd PRIVATE tembr_core Qt6::Widgets Qt6::Test)
+    add_test(NAME test_osd COMMAND test_osd)
+    set_tests_properties(test_osd PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     # Manual tools (see the file headers).
     add_executable(playlist_probe tests/playlist_probe.cpp)

@@ -19,6 +19,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QSpinBox>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QToolButton>
@@ -33,6 +34,11 @@ AppSettings AppSettings::load()
     a.closeToTray = s.value(QStringLiteral("ui/closeToTray"), false).toBool();
     a.hotkeys = GlobalHotkeys::load(&a.droppedHotkeys);
     a.releaseHotkeysOnExit = s.value(QStringLiteral("hotkeys/releaseOnExit"), true).toBool();
+    a.osd.when = TrackOsd::When(qBound(0, s.value(QStringLiteral("osd/when"), int(a.osd.when)).toInt(),
+                                       int(TrackOsd::When::Always)));
+    a.osd.where = TrackOsd::Where(qBound(0, s.value(QStringLiteral("osd/where"), int(a.osd.where)).toInt(),
+                                         int(TrackOsd::Where::BottomLeft)));
+    a.osd.seconds = qBound(1, s.value(QStringLiteral("osd/seconds"), a.osd.seconds).toInt(), 10);
     return a;
 }
 
@@ -43,6 +49,9 @@ void AppSettings::save() const
     s.setValue(QStringLiteral("ui/trayIcon"), trayIcon);
     s.setValue(QStringLiteral("ui/closeToTray"), closeToTray);
     s.setValue(QStringLiteral("hotkeys/releaseOnExit"), releaseHotkeysOnExit);
+    s.setValue(QStringLiteral("osd/when"), int(osd.when));
+    s.setValue(QStringLiteral("osd/where"), int(osd.where));
+    s.setValue(QStringLiteral("osd/seconds"), osd.seconds);
     GlobalHotkeys::save(hotkeys);
 }
 
@@ -79,6 +88,48 @@ SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
     trayLayout->addWidget(m_tray);
     trayLayout->addWidget(m_closeToTray);
     trayLayout->addWidget(trayNote);
+
+    // --- Track title on screen
+    auto *osd = new QGroupBox(QStringLiteral("Название трека на экране при переключении"));
+    auto *osdForm = new QFormLayout(osd);
+    m_osdWhen = new QComboBox;
+    m_osdWhen->addItem(QStringLiteral("Не показывать"), int(TrackOsd::When::Never));
+    m_osdWhen->addItem(QStringLiteral("Когда окно свёрнуто или скрыто"), int(TrackOsd::When::Minimized));
+    m_osdWhen->addItem(QStringLiteral("Когда окно не активно"), int(TrackOsd::When::Inactive));
+    m_osdWhen->addItem(QStringLiteral("Всегда"), int(TrackOsd::When::Always));
+    m_osdWhen->setCurrentIndex(m_osdWhen->findData(int(current.osd.when)));
+    m_osdWhere = new QComboBox;
+    m_osdWhere->addItem(QStringLiteral("Вверху слева"), int(TrackOsd::Where::TopLeft));
+    m_osdWhere->addItem(QStringLiteral("Вверху по центру"), int(TrackOsd::Where::TopCenter));
+    m_osdWhere->addItem(QStringLiteral("Вверху справа"), int(TrackOsd::Where::TopRight));
+    m_osdWhere->addItem(QStringLiteral("Внизу слева"), int(TrackOsd::Where::BottomLeft));
+    m_osdWhere->addItem(QStringLiteral("Внизу по центру"), int(TrackOsd::Where::BottomCenter));
+    m_osdWhere->addItem(QStringLiteral("Внизу справа"), int(TrackOsd::Where::BottomRight));
+    m_osdWhere->setCurrentIndex(m_osdWhere->findData(int(current.osd.where)));
+    m_osdSeconds = new QSpinBox;
+    m_osdSeconds->setRange(1, 10);
+    m_osdSeconds->setSuffix(QStringLiteral(" с"));
+    m_osdSeconds->setValue(current.osd.seconds);
+    auto osdEnabled = [this] {
+        const bool on = m_osdWhen->currentData().toInt() != int(TrackOsd::When::Never);
+        m_osdWhere->setEnabled(on && TrackOsd::defaultBackend() == TrackOsd::Backend::Window);
+        m_osdSeconds->setEnabled(on);
+    };
+    connect(m_osdWhen, qOverload<int>(&QComboBox::currentIndexChanged), this, osdEnabled);
+    osdEnabled();
+    osdForm->addRow(QStringLiteral("Показывать:"), m_osdWhen);
+    osdForm->addRow(QStringLiteral("Где:"), m_osdWhere);
+    osdForm->addRow(QStringLiteral("Сколько:"), m_osdSeconds);
+    auto *osdNote = new QLabel;
+    osdNote->setWordWrap(true);
+    osdNote->setForegroundRole(QPalette::PlaceholderText);
+    osdNote->setText(TrackOsd::defaultBackend() == TrackOsd::Backend::Window
+                         ? QStringLiteral("Название, исполнитель, альбом и длительность на полупрозрачном фоне "
+                                          "поверх всех окон. Не мешает щелчкам и не забирает фокус.")
+                         : QStringLiteral("В этом сеансе Wayland программы не могут сами размещать окна на экране, "
+                                          "поэтому название показывается системным уведомлением; положение "
+                                          "задаётся настройками уведомлений рабочего стола."));
+    osdForm->addRow(osdNote);
 
     // --- Global hotkeys
     auto *keys = new QGroupBox(QStringLiteral("Глобальные горячие клавиши (работают при свёрнутом окне)"));
@@ -149,6 +200,7 @@ SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
     auto *layout = new QVBoxLayout(this);
     layout->addWidget(look);
     layout->addWidget(tray);
+    layout->addWidget(osd);
     layout->addWidget(keys);
     layout->addWidget(install, 0, Qt::AlignLeft);
     layout->addStretch();
@@ -186,6 +238,9 @@ AppSettings SettingsDialog::values() const
     a.trayIcon = m_tray->isChecked();
     a.closeToTray = m_tray->isChecked() && m_closeToTray->isChecked();
     a.releaseHotkeysOnExit = m_releaseKeys->isChecked();
+    a.osd.when = TrackOsd::When(m_osdWhen->currentData().toInt());
+    a.osd.where = TrackOsd::Where(m_osdWhere->currentData().toInt());
+    a.osd.seconds = m_osdSeconds->value();
     for (auto it = m_keys.cbegin(); it != m_keys.cend(); ++it) {
         if (!it.value()->keySequence().isEmpty())
             a.hotkeys.insert(it.key(), it.value()->keySequence());
