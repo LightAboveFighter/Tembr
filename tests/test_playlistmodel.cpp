@@ -145,6 +145,21 @@ private slots:
         QCOMPARE(m.nextRow(), -1);
         QCOMPARE(title(m, m.previousRow()), QStringLiteral("A"));
     }
+
+    // Tags read in the background must not undo "find moved files": a result
+    // for the old path, arriving after the track was pointed elsewhere, is
+    // dropped (results reach the model only through the event loop).
+    void lateScanResultKeepsTheNewPath()
+    {
+        PlaylistModel m;
+        Track t = Track::fromPath(QStringLiteral("/nonexistent/old/a.mp3"));
+        t.missing = true;
+        t.durationMs = 1000;       // known length: relocating does not read the tags again
+        m.insertTracks(-1, {t});   // starts reading tags of the old path
+        m.relocate({{0, QStringLiteral("/nonexistent/new/a.mp3")}});
+        QTRY_VERIFY(!m.isScanning());
+        QCOMPARE(m.track(0).path, QStringLiteral("/nonexistent/new/a.mp3"));
+    }
 };
 
 QTEST_MAIN(TestPlaylistModel)

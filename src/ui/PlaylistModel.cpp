@@ -368,6 +368,8 @@ void PlaylistModel::applyScanned(const Track &t)
     const int row = rowOfUid(t.uid);
     if (row < 0)
         return;   // removed while being scanned
+    if (m_tracks.at(row).path != t.path)
+        return;   // pointed elsewhere meanwhile ("find moved files"): not this file's tags
     m_tracks[row] = t;
     emitRowChanged(row);
 }
