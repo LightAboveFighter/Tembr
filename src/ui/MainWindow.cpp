@@ -599,6 +599,16 @@ PlaylistPage *MainWindow::addPage(const QString &name)
     connect(page, &PlaylistPage::contextMenuRequested, this, &MainWindow::showContextMenu);
     connect(page->view()->horizontalHeader(), &QWidget::customContextMenuRequested, this,
             [this, page](const QPoint &p) { showHeaderMenu(page->view()->horizontalHeader()->mapToGlobal(p)); });
+    connect(page->model(), &PlaylistModel::currentDetached, this, [this, page] {
+        if (page != m_playingPage)
+            return;
+        if (m_engine->state() == AudioEngine::State::Stopped) {
+            page->model()->setCurrent(0);   // nothing playing: nothing to go on from
+            updateNowPlaying();
+        } else {
+            updateNavigation();   // plays on, shown as before; "next" is decided by the model
+        }
+    });
     connect(page->model(), &QAbstractItemModel::dataChanged, this,
             [this, page](const QModelIndex &tl, const QModelIndex &br) {
                 const int cur = page->model()->currentRow();
@@ -798,8 +808,10 @@ void MainWindow::playNext()
     PlaylistPage *page = m_playingPage ? m_playingPage.data() : currentPage();
     if (!page)
         return;
-    const int next = page->model()->currentRow() + 1;
-    if (next >= page->model()->rowCount()) {
+    PlaylistModel *model = page->model();
+    // Also from a track whose row has gone (deleted): see PlaylistModel::nextRow().
+    const int next = model->currentUid() ? model->nextRow() : (model->rowCount() > 0 ? 0 : -1);
+    if (next < 0) {
         m_engine->stop();   // end of playlist
         return;
     }
@@ -816,7 +828,7 @@ void MainWindow::playPrevious()
     PlaylistPage *page = m_playingPage ? m_playingPage.data() : currentPage();
     if (!page)
         return;
-    const int prev = page->model()->currentRow() - 1;
+    const int prev = page->model()->currentUid() ? page->model()->previousRow() : -1;
     if (prev >= 0) {
         playRow(page, prev);
         page->scrollToSourceRow(prev);
@@ -830,8 +842,9 @@ void MainWindow::changeVolume(int delta)
 
 void MainWindow::updateNowPlaying()
 {
-    const int row = m_playingPage ? m_playingPage->model()->currentRow() : -1;
-    if (row < 0) {
+    // Also a track whose row is gone: it plays on, so it is still shown.
+    const Track *current = m_playingPage ? m_playingPage->model()->currentTrack() : nullptr;
+    if (!current) {
         m_nowPlaying->clear();
         m_coverPath.clear();
         m_coverImage = QImage();
@@ -844,7 +857,7 @@ void MainWindow::updateNowPlaying()
         updateNavigation();
         return;
     }
-    const Track t = m_playingPage->model()->track(row);
+    const Track t = *current;
     if (t.path != m_coverPath) {
         m_coverPath = t.path;
         m_coverImage = t.isUrl() ? QImage() : MetadataReader::readCover(t.path);
@@ -873,10 +886,12 @@ void MainWindow::updateNowPlaying()
 
 void MainWindow::updateNavigation()
 {
-    const int row = m_playingPage ? m_playingPage->model()->currentRow() : -1;
-    const int count = m_playingPage ? m_playingPage->model()->rowCount() : 0;
-    m_mpris->setNavigation(row + 1 < count || (row < 0 && currentPage() && currentPage()->model()->rowCount() > 0),
-                           row > 0);
+    PlaylistModel *model = m_playingPage ? m_playingPage->model() : nullptr;
+    if (model && model->currentUid()) {
+        m_mpris->setNavigation(model->nextRow() >= 0, model->previousRow() >= 0);
+        return;
+    }
+    m_mpris->setNavigation(currentPage() && currentPage()->model()->rowCount() > 0, false);
 }
 
 // --- Playlist helpers ----------------------------------------------------------
@@ -1250,9 +1265,8 @@ void MainWindow::saveSession()
     s.setValue(QStringLiteral("session/playingTab"), playingTab);
     s.setValue(QStringLiteral("session/playingRow"), m_playingPage ? m_playingPage->model()->currentRow() : -1);
     // Rows of Local files change with the folders: remember the file.
-    const int playingRow = m_playingPage ? m_playingPage->model()->currentRow() : -1;
-    s.setValue(QStringLiteral("session/playingPath"),
-               playingRow >= 0 ? m_playingPage->model()->track(playingRow).path : QString());
+    const Track *playing = m_playingPage ? m_playingPage->model()->currentTrack() : nullptr;
+    s.setValue(QStringLiteral("session/playingPath"), playing ? playing->path : QString());
     s.setValue(QStringLiteral("volume"), m_volume->value());
     s.setValue(QStringLiteral("searchField"), m_searchField->currentIndex());
     s.setValue(QStringLiteral("geometry"), saveGeometry());

@@ -64,6 +64,18 @@ public:
     quint64 currentUid() const { return m_currentUid; }
     int currentRow() const { return rowOfUid(m_currentUid); }
     void setCurrent(quint64 uid);
+
+    // The current track stays current when its row goes away (removed from
+    // the playlist, its file deleted, Local files rescanned): it keeps
+    // playing and showing, and the player goes on from where it was.
+    const Track *currentTrack() const;   // nullptr: none
+    bool isCurrentDetached() const { return m_currentUid != 0 && currentRow() < 0; }
+    // Rows to go to from the current track, -1 at the ends. For a removed
+    // one: the first track that came after (before) it and is still here,
+    // else the track now in its place; so it does not depend on what else
+    // was removed or how the list was reordered meanwhile.
+    int nextRow() const;
+    int previousRow() const;
     void setPaused(bool paused);
 
     qint64 totalDurationMs() const;
@@ -71,11 +83,14 @@ public:
 
 signals:
     void contentsChanged();   // tracks added/removed/updated: refresh totals
+    void currentDetached();   // the current track's row went away (see currentTrack())
 
 private:
     void startScan(const TrackList &tracks);
     void applyScanned(const Track &t);
     void rebuildIndex();
+    void rememberCurrent();   // before rows go away
+    void checkCurrent();      // after: detach if its row is gone
     void emitRowChanged(int row);
 
     QString m_name;
@@ -83,6 +98,11 @@ private:
     TrackList m_tracks;
     QHash<quint64, int> m_rowByUid;
     quint64 m_currentUid = 0;
+    Track m_detached;                 // copy of the current track once its row is gone
+    QVector<quint64> m_after;         // uids after / before it when it went away (nearest first)
+    QVector<quint64> m_before;
+    int m_detachedSlot = -1;          // its row then
+    bool m_checkCurrent = false;      // rememberCurrent() took a snapshot
     bool m_paused = false;
     QList<QFutureWatcher<Track> *> m_watchers;
 };

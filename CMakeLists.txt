@@ -92,6 +92,11 @@ if(TEMBR_BUILD_TESTS)
     target_link_libraries(test_osd PRIVATE tembr_core Qt6::Widgets Qt6::Test)
     add_test(NAME test_osd COMMAND test_osd)
     set_tests_properties(test_osd PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(test_playlistmodel tests/test_playlistmodel.cpp src/ui/PlaylistModel.cpp src/ui/PlaylistModel.h
+                   src/ui/Icons.cpp src/ui/Theme.cpp)
+    target_link_libraries(test_playlistmodel PRIVATE tembr_core Qt6::Widgets Qt6::Test)
+    add_test(NAME test_playlistmodel COMMAND test_playlistmodel)
+    set_tests_properties(test_playlistmodel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     # Manual tools (see the file headers).
     add_executable(playlist_probe tests/playlist_probe.cpp)
