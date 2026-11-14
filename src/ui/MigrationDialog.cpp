@@ -219,7 +219,7 @@ MigrationDialog::~MigrationDialog()
 
 void MigrationDialog::reject()
 {
-    if (m_busy) {
+    if (m_busy && !m_discovering) {   // an import or a search on the phone: cancel it first
         m_cancel->store(true);
         return;
     }
@@ -231,13 +231,29 @@ bool MigrationDialog::phoneMode() const
     return m_fromPhone->isChecked();
 }
 
+// Looking for phones runs adb (up to tens of seconds when a device does not
+// answer): done in the background, the dialog stays usable and closable.
 void MigrationDialog::refreshSources()
 {
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    m_profiles = Migration::findAimpProfiles();
-    const Migration::PhoneDiscovery phones = Migration::discoverPhones();
-    QApplication::restoreOverrideCursor();
+    if (m_busy)
+        return;
+    m_discovering = true;
+    setBusy(true, QStringLiteral("Поиск AIMP и подключённых телефонов…"));
+    using Found = QPair<QList<Migration::AimpProfile>, Migration::PhoneDiscovery>;
+    auto *watcher = new QFutureWatcher<Found>(this);
+    connect(watcher, &QFutureWatcher<Found>::finished, this, [this, watcher] {
+        const Found found = watcher->result();
+        watcher->deleteLater();
+        m_discovering = false;
+        setBusy(false);
+        showSources(found.first, found.second);
+    });
+    watcher->setFuture(QtConcurrent::run([] { return Found(Migration::findAimpProfiles(), Migration::discoverPhones()); }));
+}
 
+void MigrationDialog::showSources(const QList<Migration::AimpProfile> &profiles, const Migration::PhoneDiscovery &phones)
+{
+    m_profiles = profiles;
     {
         // Refill without each change triggering a search; one search follows below.
         const QSignalBlocker b1(m_aimpProfiles), b2(m_phones), b3(m_fromAimp);
