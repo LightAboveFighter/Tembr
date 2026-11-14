@@ -166,6 +166,16 @@ MainWindow::MainWindow(QWidget *parent)
     registerHotkeys();
     // Also on logout and other ways out that skip closeEvent.
     connect(qApp, &QCoreApplication::aboutToQuit, this, &MainWindow::releaseHotkeys);
+    connect(qApp, &QCoreApplication::aboutToQuit, this, [this] {
+        if (!m_finalSaveDone)
+            saveSession();
+    });
+    connect(qApp, &QGuiApplication::commitDataRequest, this, [this] { saveSession(); });   // desktop logout
+
+    m_autosave = new QTimer(this);
+    m_autosave->setSingleShot(true);
+    m_autosave->setInterval(3000);
+    connect(m_autosave, &QTimer::timeout, this, [this] { saveSession(SaveScope::Playlists); });
 
     if (!m_settings.droppedHotkeys.isEmpty()) {
         m_settings.save();   // forget them for good
@@ -322,6 +332,7 @@ void MainWindow::buildUi()
     m_tabs->setDocumentMode(true);
     m_tabs->tabBar()->setExpanding(false);
     connect(m_tabs, &QTabWidget::tabCloseRequested, this, &MainWindow::closePage);
+    connect(m_tabs->tabBar(), &QTabBar::tabMoved, this, &MainWindow::scheduleSave);
     connect(m_tabs, &QTabWidget::currentChanged, this, [this] {
         applySearch();
         updateStats();
@@ -590,6 +601,13 @@ PlaylistPage *MainWindow::addPage(const QString &name)
         if (playFirst)
             playRow(page, row);
     });
+    // Ordinary playlists are saved soon after they change (also when sorted).
+    const auto changed = [this, page] {
+        if (page != m_localPage)
+            scheduleSave();
+    };
+    connect(page->model(), &PlaylistModel::contentsChanged, this, changed);
+    connect(page->model(), &QAbstractItemModel::layoutChanged, this, changed);
     connect(page, &PlaylistPage::statsChanged, this, [this, page] {
         if (page == currentPage())
             updateStats();
@@ -641,6 +659,7 @@ void MainWindow::closePage(int index)
         updateNowPlaying();
     }
     m_tabs->removeTab(index);
+    scheduleSave();
     page->deleteLater();
 }
 
@@ -662,6 +681,7 @@ void MainWindow::renamePage(int index)
         return;
     page->model()->setName(name);
     m_tabs->setTabText(index, name);
+    scheduleSave();
 }
 
 void MainWindow::openPaths(const QStringList &paths)
@@ -1234,27 +1254,49 @@ void MainWindow::savePlaylist()
 
 // --- Session -----------------------------------------------------------------
 
-void MainWindow::saveSession()
+void MainWindow::scheduleSave()
 {
+    if (m_autosave)
+        m_autosave->start();
+}
+
+void MainWindow::saveSession(SaveScope scope)
+{
+    if (m_autosave)
+        m_autosave->stop();
     const QString dir = playlistDir();
     QDir().mkpath(dir);
-    for (const QString &old : QDir(dir).entryList({QStringLiteral("*.xspf")}, QDir::Files))
-        QFile::remove(dir + QLatin1Char('/') + old);
 
     // Tab indexes count every tab; files are written for ordinary playlists only
-    // (Local files are rebuilt from the folders, with their own cache).
+    // (Local files are rebuilt from the folders, with their own cache). Each
+    // file is replaced atomically; old files go only after all are written.
     int playingTab = -1;
     int files = 0;
+    QSet<QString> written;
+    QStringList failed;
     for (int i = 0; i < m_tabs->count(); ++i) {
         auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(i));
         if (page == m_playingPage)
             playingTab = i;
         if (page == m_localPage)
             continue;
-        const QString file = QStringLiteral("%1/%2.xspf").arg(dir).arg(files++, 3, 10, QLatin1Char('0'));
-        PlaylistIO::save(file, {page->model()->name(), page->model()->tracks()});
+        const QString name = QStringLiteral("%1.xspf").arg(files++, 3, 10, QLatin1Char('0'));
+        QString error;
+        if (PlaylistIO::save(dir + QLatin1Char('/') + name, {page->model()->name(), page->model()->tracks()}, &error))
+            written.insert(name);
+        else
+            failed << QStringLiteral("%1: %2").arg(page->model()->name(), error);
     }
-    m_localFiles->saveCache(m_localPage->model()->tracks());
+    if (failed.isEmpty()) {
+        for (const QString &old : QDir(dir).entryList({QStringLiteral("*.xspf")}, QDir::Files)) {
+            if (!written.contains(old))
+                QFile::remove(dir + QLatin1Char('/') + old);
+        }
+    } else {
+        statusBar()->showMessage(QStringLiteral("Не удалось сохранить плейлисты: ") + failed.join(QStringLiteral("; ")), 10000);
+    }
+    if (scope == SaveScope::Everything)
+        m_localFiles->saveCache(m_localPage->model()->tracks());
 
     QSettings s;
     s.setValue(QStringLiteral("session/version"), 2);
@@ -1344,6 +1386,7 @@ void MainWindow::closeEvent(QCloseEvent *e)
         return;
     }
     saveSession();
+    m_finalSaveDone = true;
     m_engine->unload();
     releaseHotkeys();
     if (!m_artFile.isEmpty())

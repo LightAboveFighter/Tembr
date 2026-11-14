@@ -8,6 +8,7 @@
 #include <QImage>
 #include <QMainWindow>
 #include <QPointer>
+#include <QTimer>
 
 class QAction;
 class QComboBox;
@@ -86,7 +87,12 @@ private:
     void rememberMoves(const QList<QPair<QString, QString>> &moves);
     void offerToFindMoved(int missing, int total);
 
-    void saveSession();
+    // Playlists, tab layout and player state; with the Local files cache
+    // (large) only when the player closes. Writes every file before
+    // removing ones no longer used, so a failure never loses playlists.
+    enum class SaveScope { Playlists, Everything };
+    void saveSession(SaveScope scope = SaveScope::Everything);
+    void scheduleSave();   // soon after a change, so a crash or kill loses little
     void restoreSession();
 
     AudioEngine *m_engine;
@@ -129,4 +135,6 @@ private:
     int m_failStreak = 0;       // consecutive unplayable tracks skipped
     QFuture<QString> m_hotkeyJob;   // background registration at startup
     bool m_hotkeysReleased = false;
+    QTimer *m_autosave = nullptr;
+    bool m_finalSaveDone = false;   // saved on close: not again on quit
 };
