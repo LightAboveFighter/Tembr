@@ -9,6 +9,7 @@
 #include "platform/Mpris.h"
 #include "ui/Icons.h"
 #include "ui/LocalFilesDialog.h"
+#include "ui/MigrationDialog.h"
 #include "ui/NowPlayingPanel.h"
 #include "ui/PlaylistFilterProxy.h"
 #include "ui/PlaylistModel.h"
@@ -218,6 +219,8 @@ void MainWindow::buildActions()
             [this] { m_tabs->setCurrentWidget(addPage(QStringLiteral("Плейлист %1").arg(m_tabs->count() + 1))); });
     addItem(file, QStringLiteral("Открыть плейлисты…"), QKeySequence(QStringLiteral("Ctrl+L")), this,
             &MainWindow::openPlaylists);
+    addItem(file, QStringLiteral("Импорт из AIMP (компьютер, Android)…"), QKeySequence(QStringLiteral("Ctrl+Shift+I")),
+            this, &MainWindow::importFromAimp);
     addItem(file, QStringLiteral("Сохранить плейлист как…"), QKeySequence::Save, this, &MainWindow::savePlaylist);
     addItem(file, QStringLiteral("Переименовать плейлист…"), QKeySequence(Qt::Key_F2), this,
             [this] { renamePage(m_tabs->currentIndex()); });
@@ -1096,16 +1099,7 @@ void MainWindow::findMovedFiles()
             page->model()->relocate(pageMoves);
         }
 
-        // Remember the folder moves for playlists opened later.
-        QList<PathResolver::Remap> remaps = Relocator::deriveRemaps(moves);
-        for (const auto &old : PathResolver::remaps()) {
-            const bool known = std::any_of(remaps.cbegin(), remaps.cend(),
-                                           [&](const PathResolver::Remap &r) { return r.first == old.first; });
-            if (!known)
-                remaps.append(old);
-        }
-        PathResolver::setRemaps(remaps);
-        saveRemaps(remaps);
+        rememberMoves(moves);
 
         statusBar()->clearMessage();
         updateStats();
@@ -1117,6 +1111,74 @@ void MainWindow::findMovedFiles()
                                      .arg(missing));
     });
     watcher->setFuture(QtConcurrent::run([folder] { return Relocator::build(folder); }));
+}
+
+// Remember folder moves so that playlists opened later find their files.
+void MainWindow::rememberMoves(const QList<QPair<QString, QString>> &moves)
+{
+    if (moves.isEmpty())
+        return;
+    QList<PathResolver::Remap> remaps = Relocator::deriveRemaps(moves);
+    for (const auto &old : PathResolver::remaps()) {
+        const bool known = std::any_of(remaps.cbegin(), remaps.cend(),
+                                       [&](const PathResolver::Remap &r) { return r.first == old.first; });
+        if (!known)
+            remaps.append(old);
+    }
+    PathResolver::setRemaps(remaps);
+    saveRemaps(remaps);
+}
+
+void MainWindow::importFromAimp()
+{
+    MigrationDialog dlg(this);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    const MigrationResult r = dlg.result();
+
+    PlaylistPage *first = nullptr;
+    PlaylistPage *active = nullptr;
+    for (int i = 0; i < r.playlists.size(); ++i) {
+        const PlaylistData &data = r.playlists[i];
+        PlaylistPage *page = nullptr;
+        if (r.replaceSameName) {
+            for (int t = 0; t < m_tabs->count() && !page; ++t) {
+                auto *p = qobject_cast<PlaylistPage *>(m_tabs->widget(t));
+                if (p && !p->isReadOnly() && p->model()->name() == data.name)
+                    page = p;
+            }
+        }
+        if (!page && i == 0 && currentPage() && !currentPage()->isReadOnly()
+            && currentPage()->model()->rowCount() == 0)
+            page = currentPage();   // a fresh empty tab
+        if (!page)
+            page = addPage(data.name);
+        page->model()->clear();
+        page->model()->setName(data.name);
+        m_tabs->setTabText(m_tabs->indexOf(page), data.name);
+        page->model()->insertTracks(-1, data.tracks);
+
+        if (!first)
+            first = page;
+        if (i == r.activeIndex)
+            active = page;
+        // Continue where AIMP was, without starting playback.
+        if (i == r.playingIndex && r.playingRow >= 0 && r.playingRow < page->model()->rowCount()
+            && m_engine->state() == AudioEngine::State::Stopped) {
+            if (m_playingPage && m_playingPage != page)
+                m_playingPage->model()->setCurrent(0);
+            m_playingPage = page;
+            page->model()->setCurrent(page->model()->track(r.playingRow).uid);
+            page->scrollToSourceRow(r.playingRow);
+            updateNowPlaying();
+        }
+    }
+    if (PlaylistPage *show = active ? active : first)
+        m_tabs->setCurrentWidget(show);
+    rememberMoves(r.moves);
+    updateNowPlaying();   // a replaced tab may have held the current track
+    updateStats();
+    QMessageBox::information(this, windowTitle(), QStringLiteral("Импорт завершён.\n\n") + r.summary);
 }
 
 void MainWindow::savePlaylist()

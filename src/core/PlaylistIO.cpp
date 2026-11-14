@@ -41,6 +41,22 @@ QString resolvePath(const QString &entry, const QString &baseDir)
     return PathResolver(baseDir).resolve(entry);
 }
 
+EntryResolver localResolver(const QString &baseDir)
+{
+    return [resolver = PathResolver(baseDir)](const QString &entry) { return resolver.resolve(entry); };
+}
+
+// XSPF locations are URIs. Relative ones are still percent-encoded
+// ("Music/My%20Song.mp3", as AIMP for Android writes them): decode those.
+QString xspfLocation(const QString &raw)
+{
+    const QString loc = raw.trimmed();
+    static const QRegularExpression scheme(QStringLiteral("^[A-Za-z][A-Za-z0-9+.-]*:"));
+    if (loc.contains(QLatin1Char('%')) && !scheme.match(loc).hasMatch())
+        return QUrl::fromPercentEncoding(loc.toUtf8());
+    return loc;
+}
+
 void splitArtistTitle(const QString &s, Track &t)
 {
     const int sep = s.indexOf(QLatin1String(" - "));
@@ -351,6 +367,11 @@ bool isPlaylistFile(const QString &path)
 
 TrackList parseM3u(const QString &text, const QString &baseDir, QString *name)
 {
+    return parseM3u(text, localResolver(baseDir), name);
+}
+
+TrackList parseM3u(const QString &text, const EntryResolver &resolve, QString *name)
+{
     TrackList out;
     QString pendingTitle;
     qint64 pendingDuration = 0;
@@ -369,7 +390,7 @@ TrackList parseM3u(const QString &text, const QString &baseDir, QString *name)
             if (name)
                 *name = line.mid(10).trimmed();
         } else if (!line.startsWith(QLatin1Char('#'))) {
-            Track t = Track::fromPath(resolvePath(line, baseDir));
+            Track t = Track::fromPath(resolve(line));
             if (!pendingTitle.isEmpty())
                 splitArtistTitle(pendingTitle, t);
             t.durationMs = pendingDuration;
@@ -383,6 +404,11 @@ TrackList parseM3u(const QString &text, const QString &baseDir, QString *name)
 
 TrackList parsePls(const QString &text, const QString &baseDir)
 {
+    return parsePls(text, localResolver(baseDir));
+}
+
+TrackList parsePls(const QString &text, const EntryResolver &resolve)
+{
     QMap<int, Track> byIndex;
     static const QRegularExpression re(QStringLiteral("^(File|Title|Length)(\\d+)\\s*=(.*)$"),
                                        QRegularExpression::CaseInsensitiveOption);
@@ -395,7 +421,7 @@ TrackList parsePls(const QString &text, const QString &baseDir)
         const QString value = m.captured(3).trimmed();
         Track &t = byIndex[idx];
         if (key == QLatin1String("file"))
-            t.path = resolvePath(value, baseDir);
+            t.path = resolve(value);
         else if (key == QLatin1String("title"))
             splitArtistTitle(value, t);
         else if (value.toLongLong() > 0)
@@ -413,6 +439,11 @@ TrackList parsePls(const QString &text, const QString &baseDir)
 
 TrackList parseXspf(const QByteArray &xml, const QString &baseDir, QString *name)
 {
+    return parseXspf(xml, localResolver(baseDir), name);
+}
+
+TrackList parseXspf(const QByteArray &xml, const EntryResolver &resolve, QString *name)
+{
     TrackList out;
     QXmlStreamReader r(xml);
     Track cur;
@@ -428,7 +459,7 @@ TrackList parseXspf(const QByteArray &xml, const QString &baseDir, QString *name
                 if (tag == QLatin1String("title") && name)
                     *name = r.readElementText().trimmed();
             } else if (tag == QLatin1String("location")) {
-                cur.path = resolvePath(r.readElementText(), baseDir);
+                cur.path = resolve(xspfLocation(r.readElementText()));
             } else if (tag == QLatin1String("title")) {
                 cur.title = r.readElementText().trimmed();
             } else if (tag == QLatin1String("creator")) {
@@ -499,8 +530,12 @@ QString aimpField(const QStringList &f, int i)
 
 TrackList parseAimppl4(const QString &text, const QString &baseDir, QString *name)
 {
+    return parseAimppl4(text, localResolver(baseDir), name);
+}
+
+TrackList parseAimppl4(const QString &text, const EntryResolver &resolve, QString *name)
+{
     TrackList out;
-    const PathResolver resolver(baseDir);
     enum class Section { None, Summary, Settings, Content } section = Section::None;
     for (const QString &raw : text.split(QRegularExpression(QStringLiteral("[\r\n]")), Qt::SkipEmptyParts)) {
         const QString line = raw.trimmed();
@@ -527,7 +562,7 @@ TrackList parseAimppl4(const QString &text, const QString &baseDir, QString *nam
             continue;
 
         const QStringList f = line.split(QLatin1Char('|'));
-        Track t = Track::fromPath(resolver.resolve(f.at(Aimp::Path)));
+        Track t = Track::fromPath(resolve(f.at(Aimp::Path)));
         t.title = aimpField(f, Aimp::Title);
         t.artist = aimpField(f, Aimp::Artist);
         t.album = aimpField(f, Aimp::Album);
@@ -631,6 +666,20 @@ TrackList loadCue(const QString &cueFile, QString *albumTitle)
     if (!f.open(QIODevice::ReadOnly))
         return {};
     return parseCue(decodeText(f.readAll()), cueFile, albumTitle);
+}
+
+TrackList parse(const QByteArray &data, const QString &format, const EntryResolver &resolve, QString *name)
+{
+    const QString ext = format.toLower();
+    if (ext == QLatin1String("m3u") || ext == QLatin1String("m3u8"))
+        return parseM3u(decodeText(data), resolve, name);
+    if (ext == QLatin1String("pls"))
+        return parsePls(decodeText(data), resolve);
+    if (ext == QLatin1String("xspf"))
+        return parseXspf(data, resolve, name);
+    if (ext == QLatin1String("aimppl4"))
+        return parseAimppl4(decodeText(data), resolve, name);
+    return {};
 }
 
 bool load(const QString &file, PlaylistData &out, QString *error)

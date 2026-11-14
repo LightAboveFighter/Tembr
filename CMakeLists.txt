@@ -38,6 +38,9 @@ add_library(tembr_core STATIC
     src/audio/AudioEngine.h src/audio/AudioEngine.cpp
     src/platform/Mpris.h src/platform/Mpris.cpp
     src/platform/GlobalHotkeys.h src/platform/GlobalHotkeys.cpp
+    src/migration/AimpProfiles.h src/migration/AimpProfiles.cpp
+    src/migration/PhoneSources.h src/migration/PhoneSources.cpp
+    src/migration/PhoneImport.h src/migration/PhoneImport.cpp
 )
 target_include_directories(tembr_core PUBLIC src)
 target_link_libraries(tembr_core PUBLIC Qt6::Core Qt6::Gui Qt6::Concurrent Qt6::DBus PkgConfig::FFMPEG miniaudio)
@@ -56,10 +59,16 @@ add_executable(tembr
     src/ui/SettingsDialog.h src/ui/SettingsDialog.cpp
     src/ui/HotkeyEdit.h src/ui/HotkeyEdit.cpp
     src/ui/LocalFilesDialog.h src/ui/LocalFilesDialog.cpp
+    src/ui/MigrationDialog.h src/ui/MigrationDialog.cpp
 )
 target_link_libraries(tembr PRIVATE tembr_core Qt6::Widgets)
 target_compile_definitions(tembr PRIVATE TEMBR_VERSION="${PROJECT_VERSION}")
 install(TARGETS tembr RUNTIME DESTINATION bin)
+
+# --- migration tool ------------------------------------------------------------
+add_executable(tembr-migrate tools/tembr-migrate.cpp)
+target_link_libraries(tembr-migrate PRIVATE tembr_core)
+install(TARGETS tembr-migrate RUNTIME DESTINATION bin)
 install(FILES data/tembr.desktop DESTINATION share/applications)
 install(FILES data/tembr.svg DESTINATION share/icons/hicolor/scalable/apps)
 
@@ -67,7 +76,7 @@ install(FILES data/tembr.svg DESTINATION share/icons/hicolor/scalable/apps)
 if(TEMBR_BUILD_TESTS)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     enable_testing()
-    foreach(t test_playlistio test_trackquery test_hotkeys test_localfiles)
+    foreach(t test_playlistio test_trackquery test_hotkeys test_localfiles test_migration)
         add_executable(${t} tests/${t}.cpp)
         target_link_libraries(${t} PRIVATE tembr_core Qt6::Test)
         add_test(NAME ${t} COMMAND ${t})

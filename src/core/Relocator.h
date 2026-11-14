@@ -31,6 +31,10 @@ Index build(const QStringList &roots);
 // ambiguous nothing is returned: a wrong song is worse than a missing one.
 QString find(const Track &t, const Index &index);
 
+// Points missing local tracks of `tracks` at files found in `index`.
+// Appends (old path, new path) to `moves` if given; returns how many.
+int relocateMissing(TrackList &tracks, const Index &index, QList<QPair<QString, QString>> *moves = nullptr);
+
 // Folder-level moves (old folder -> new folder), most frequent first.
 QList<PathResolver::Remap> deriveRemaps(const QList<QPair<QString, QString>> &moves);
 
