@@ -53,6 +53,7 @@ signals:
 private:
     void setState(State s);
     void poll();
+    void haltDevice();
 
     struct Impl;
     std::unique_ptr<Impl> d;

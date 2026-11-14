@@ -20,6 +20,8 @@ extern "C" {
 
 #include "miniaudio.h"
 
+extern "C" ma_result tembr_device_discard_playback(ma_device *pDevice);   // miniaudio_impl.c
+
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 100)
 #define TEMBR_HAVE_CH_LAYOUT 1
 #endif
@@ -463,10 +465,21 @@ bool AudioEngine::load(const QString &path, qint64 startMs, qint64 endMs)
     return true;
 }
 
+// Stops the device and drops what it still buffers: the next start must not
+// begin with the tail of what played before (another track, or the position
+// before "stop"). Pausing keeps it.
+void AudioEngine::haltDevice()
+{
+    if (!d->deviceOk)
+        return;
+    if (ma_device_is_started(&d->device))
+        ma_device_stop(&d->device);
+    tembr_device_discard_playback(&d->device);
+}
+
 void AudioEngine::unload()
 {
-    if (d->deviceOk && ma_device_is_started(&d->device))
-        ma_device_stop(&d->device);
+    haltDevice();
     d->stopThread();
     d->dec.reset();
     d->loaded = false;
@@ -508,8 +521,7 @@ void AudioEngine::togglePause()
 
 void AudioEngine::stop()
 {
-    if (d->deviceOk && ma_device_is_started(&d->device))
-        ma_device_stop(&d->device);
+    haltDevice();
     if (d->loaded) {
         seek(0);
         d->atEnd = false;
