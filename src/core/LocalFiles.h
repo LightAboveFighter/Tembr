@@ -37,9 +37,14 @@ namespace LocalLibrary {
 
 // The tracks under the folders, grouped by folder in natural order (as AIMP
 // groups Local files by %FileDir). Tracks of `known` whose file is unchanged
-// (same size) are reused with their tags; the rest are new and unscanned.
-// `dirs` receives the folders walked. Blocking.
+// (same size), or whose tags are not read yet, are reused as they are; a
+// changed file keeps its uid but comes back unscanned with its new size; the
+// rest are new and unscanned. `dirs` receives the folders walked. Blocking.
 TrackList scan(const LocalFilesSettings &settings, const TrackList &known, QStringList *dirs = nullptr);
+
+// Whether a scan result brings nothing new for the list shown: the same
+// entries in the same order and no file changed.
+bool sameList(const TrackList &shown, const TrackList &scanned);
 
 } // namespace LocalLibrary
 
@@ -66,7 +71,9 @@ public:
 signals:
     void scanned(const TrackList &tracks);
     void scanningChanged(bool scanning);
-    void changedOnDisk();   // a folder changed: call rescan() with the current tracks
+    // A folder changed, or a rescan was asked for while one ran: call
+    // rescan() with the tracks shown now.
+    void changedOnDisk();
 
 private:
     void watchDirs(const QStringList &dirs);
@@ -76,5 +83,4 @@ private:
     QFileSystemWatcher m_fsWatcher;
     QTimer m_debounce;
     bool m_rescanPending = false;
-    TrackList m_pendingKnown;
 };

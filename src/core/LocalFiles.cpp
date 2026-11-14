@@ -144,16 +144,35 @@ TrackList LocalLibrary::scan(const LocalFilesSettings &settings, const TrackList
     out.reserve(found.size());
     for (Track &t : found) {
         const auto it = byKey.constFind(trackKey(t));
-        if (it != byKey.constEnd() && it->scanned && !it->missing
-            && (it->isCueTrack() || it->fileSize == QFileInfo(t.path).size())) {
-            out.append(*it);   // unchanged: keep uid and tags
-            continue;
+        if (it != byKey.constEnd()) {
+            if (!it->scanned) {
+                out.append(*it);   // tags not read yet: the list is reading them
+                continue;
+            }
+            if (!it->missing && (it->isCueTrack() || it->fileSize == QFileInfo(t.path).size())) {
+                out.append(*it);   // unchanged: keep uid and tags
+                continue;
+            }
+            // Changed (or back after being missing): same entry, tags read
+            // again. The new size marks it as changed for sameList().
+            t.uid = it->uid;
+            t.fileSize = QFileInfo(t.path).size();
         }
-        if (it != byKey.constEnd())
-            t.uid = it->uid;   // changed file: same entry, tags read again
         out.append(t);
     }
     return out;
+}
+
+bool LocalLibrary::sameList(const TrackList &shown, const TrackList &scanned)
+{
+    if (shown.size() != scanned.size())
+        return false;
+    for (int i = 0; i < shown.size(); ++i) {
+        const Track &n = scanned.at(i);
+        if (n.uid != shown.at(i).uid || (!n.scanned && n.fileSize > 0))
+            return false;
+    }
+    return true;
 }
 
 // --- LocalFiles ----------------------------------------------------------------
@@ -174,11 +193,14 @@ LocalFiles::LocalFiles(QObject *parent)
         watchDirs(result.second);
         emit scanned(result.first);
         if (m_rescanPending) {
+            // Asked for while this scan ran: rescan from what is shown now,
+            // with this result applied (an older list would give the files
+            // found by this scan new uids).
             m_rescanPending = false;
-            rescan(m_pendingKnown.isEmpty() ? result.first : m_pendingKnown);
-            return;
+            emit changedOnDisk();
         }
-        emit scanningChanged(false);
+        if (!m_watcher.isRunning())
+            emit scanningChanged(false);
     });
 }
 
@@ -211,10 +233,8 @@ void LocalFiles::rescan(const TrackList &known)
 {
     if (m_watcher.isRunning()) {
         m_rescanPending = true;
-        m_pendingKnown = known;
         return;
     }
-    m_pendingKnown.clear();
     emit scanningChanged(true);
     const LocalFilesSettings s = m_settings;
     m_watcher.setFuture(QtConcurrent::run([s, known] {

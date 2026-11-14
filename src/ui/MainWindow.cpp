@@ -710,10 +710,9 @@ void MainWindow::createLocalPage()
 void MainWindow::applyLocalScan(const TrackList &tracks)
 {
     PlaylistModel *model = m_localPage->model();
-    // Nothing changed (same entries in the same order): keep the view as it is.
-    const TrackList &now = model->tracks();
-    if (now.size() == tracks.size()
-        && std::equal(now.cbegin(), now.cend(), tracks.cbegin(), [](const Track &a, const Track &b) { return a.uid == b.uid; }))
+    // Nothing changed (same entries in the same order, no file changed):
+    // keep the view as it is.
+    if (LocalLibrary::sameList(model->tracks(), tracks))
         return;
 
     // Keep the list where the user was looking.
