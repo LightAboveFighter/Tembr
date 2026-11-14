@@ -866,6 +866,7 @@ void MainWindow::updateNowPlaying()
     if (!current) {
         m_nowPlaying->clear();
         m_coverPath.clear();
+        ++m_coverJob;   // a cover still being read is for nothing now
         m_coverImage = QImage();
         setWindowTitle(QStringLiteral("Tembr"));
         m_mpris->setTrack(nullptr, {});
@@ -879,19 +880,10 @@ void MainWindow::updateNowPlaying()
     const Track t = *current;
     if (t.path != m_coverPath) {
         m_coverPath = t.path;
-        m_coverImage = t.isUrl() ? QImage() : MetadataReader::readCover(t.path);
-
-        // MPRIS clients need the cover as a file.
-        if (!m_artFile.isEmpty())
-            QFile::remove(m_artFile);
-        m_artFile.clear();
-        if (!m_coverImage.isNull()) {
-            const QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-            QDir().mkpath(dir);
-            const QString file = QStringLiteral("%1/cover-%2.jpg").arg(dir).arg(t.uid);
-            if (m_coverImage.scaled(512, 512, Qt::KeepAspectRatio, Qt::SmoothTransformation).save(file, "JPG", 90))
-                m_artFile = file;
-        }
+        if (t.isUrl())
+            setCover(++m_coverJob, {}, {});
+        else
+            loadCover(t);   // the previous cover stays until this one is in (the same, within an album)
     }
     m_nowPlaying->showTrack(t, m_coverImage);
     setWindowTitle(t.displayTitle() + QStringLiteral(" — Tembr"));
@@ -901,6 +893,50 @@ void MainWindow::updateNowPlaying()
         m_trayTitle->setText(t.displayTitle());
     }
     updateNavigation();
+}
+
+// Reading the cover (and writing it as a file for MPRIS clients) touches the
+// disk, sometimes a slow one: done in the background, shown when it is in.
+void MainWindow::loadCover(const Track &t)
+{
+    const int job = ++m_coverJob;
+    const QString path = t.path;
+    const QString file = QStringLiteral("%1/cover-%2.jpg")
+                             .arg(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
+                             .arg(t.uid);
+    auto *watcher = new QFutureWatcher<QPair<QImage, QString>>(this);
+    connect(watcher, &QFutureWatcher<QPair<QImage, QString>>::finished, this, [this, watcher, job] {
+        const auto result = watcher->result();
+        watcher->deleteLater();
+        setCover(job, result.first, result.second);
+    });
+    watcher->setFuture(QtConcurrent::run([path, file] {
+        const QImage image = MetadataReader::readCover(path);
+        QString art;
+        if (!image.isNull()) {
+            QDir().mkpath(QFileInfo(file).absolutePath());
+            if (image.scaled(512, 512, Qt::KeepAspectRatio, Qt::SmoothTransformation).save(file, "JPG", 90))
+                art = file;
+        }
+        return qMakePair(image, art);
+    }));
+}
+
+void MainWindow::setCover(int job, const QImage &image, const QString &artFile)
+{
+    if (job != m_coverJob) {   // the track changed meanwhile
+        if (!artFile.isEmpty() && artFile != m_artFile)
+            QFile::remove(artFile);
+        return;
+    }
+    if (!m_artFile.isEmpty() && m_artFile != artFile)
+        QFile::remove(m_artFile);
+    m_artFile = artFile;
+    m_coverImage = image;
+    if (const Track *current = m_playingPage ? m_playingPage->model()->currentTrack() : nullptr) {
+        m_nowPlaying->showTrack(*current, m_coverImage);
+        m_mpris->setTrack(current, m_artFile);
+    }
 }
 
 void MainWindow::updateNavigation()
