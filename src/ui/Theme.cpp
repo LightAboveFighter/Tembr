@@ -101,7 +101,12 @@ QPushButton {
 }
 QPushButton:hover { border-color: #ff8a00; }
 QPushButton:pressed { background: #2c2c2c; }
-QPushButton:default { border-color: #ff8a00; }
+QPushButton:default, QPushButton:focus { border-color: #ff8a00; }
+
+/* Keyboard focus shows on the frame (buttons) or the box (check/radio), not
+   as a second rectangle drawn around the text. */
+QPushButton, QToolButton, QCheckBox, QRadioButton, QSlider, QTabBar, QTabBar::tab { outline: none; }
+QTabBar::tab:focus { color: #ffffff; }
 
 QToolButton { border: none; border-radius: 6px; padding: 4px; }
 QToolButton:hover { background: #242424; }
@@ -155,6 +160,7 @@ QCheckBox::indicator:checked, QRadioButton::indicator:checked { background: #ff8
 QCheckBox::indicator, QRadioButton::indicator { width: 14px; height: 14px; border: 1px solid #555; background: #1a1a1a; }
 QRadioButton::indicator { border-radius: 7px; }
 QCheckBox::indicator { border-radius: 3px; }
+QCheckBox::indicator:focus, QRadioButton::indicator:focus { border: 1px solid #ff8a00; }
 
 #NowPlayingTitle { color: #ffffff; }
 #NowPlayingArtist { color: #ff8a00; }
