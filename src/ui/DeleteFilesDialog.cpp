@@ -1,5 +1,7 @@
 #include "ui/DeleteFilesDialog.h"
 
+#include "ui/DialogFrame.h"
+
 #include <QApplication>
 #include <QCheckBox>
 #include <QDialogButtonBox>
@@ -9,12 +11,14 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QPushButton>
+#include <QScreen>
 #include <QSettings>
 #include <QStyle>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
 namespace {
+constexpr int kMinWidth = 460;
 const QString kAllPlaylistsKey = QStringLiteral("delete/fromAllPlaylists");
 }
 
@@ -23,6 +27,7 @@ DeleteFilesDialog::DeleteFilesDialog(Kind kind, const QStringList &paths, int sk
     , m_table(new QTreeWidget)
     , m_details(new QPushButton)
 {
+    resizesLikeAWindow(this);   // the list makes it worth resizing
     setWindowTitle(QStringLiteral("Удалить с диска"));
 
     auto *icon = new QLabel;
@@ -74,14 +79,21 @@ DeleteFilesDialog::DeleteFilesDialog(Kind kind, const QStringList &paths, int sk
         m_table->addTopLevelItem(item);
     }
     m_table->header()->setStretchLastSection(true);
+    m_table->ensurePolished();   // the style sheet's fonts and paddings count
     m_table->resizeColumnToContents(0);
     m_table->setColumnWidth(0, qMin(m_table->columnWidth(0) + 12, 360));
-    const int rowHeight = m_table->sizeHintForRow(0) > 0 ? m_table->sizeHintForRow(0) : fontMetrics().height() + 6;
-    m_table->setMinimumHeight(m_table->header()->sizeHint().height() + rowHeight * qMin(int(paths.size()), 8) + 4);
-    int folderWidth = 0;
-    for (const QString &p : paths)
-        folderWidth = qMax(folderWidth, fontMetrics().horizontalAdvance(QDir::toNativeSeparators(QFileInfo(p).path())));
-    m_table->setMinimumWidth(qMin(m_table->columnWidth(0) + folderWidth + 40, 760));   // grows the dialog when shown
+    m_rowHeight = m_table->sizeHintForRow(0) > 0 ? m_table->sizeHintForRow(0) : fontMetrics().height() + 6;
+    // The list grows and shrinks with the dialog (the texts above keep their
+    // height), down to a few rows and a horizontal scroll bar under them.
+    m_table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_table->setMinimumHeight(tableHeight(qMin(int(paths.size()), 3))
+                              + style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, m_table));
+    m_table->resizeColumnToContents(1);   // the longest folder, as the list draws it
+    const int folderWidth = m_table->columnWidth(1);
+    // Larger than this shows nothing more: every row, names and folders in full.
+    m_tableFull = QSize(m_table->columnWidth(0) + folderWidth + 24 + 2 * m_table->frameWidth()
+                            + style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, m_table),
+                        tableHeight(int(paths.size())));
     m_table->setVisible(false);
 
     m_details->setText(QStringLiteral("Подробнее…"));
@@ -90,7 +102,15 @@ DeleteFilesDialog::DeleteFilesDialog(Kind kind, const QStringList &paths, int sk
         const bool show = !m_table->isVisible();
         m_table->setVisible(show);
         m_details->setText(show ? QStringLiteral("Скрыть список") : QStringLiteral("Подробнее…"));
-        adjustSize();
+        updateSizeLimits();   // first: the old limits would hold the size
+        if (show) {
+            // As wide as the paths need and up to ten rows, within the limits.
+            const QMargins m = layout()->contentsMargins();
+            const int w = qBound(minimumWidth(), m.left() + m.right() + m_tableFull.width(), maximumWidth());
+            const int h = layout()->totalHeightForWidth(w) - m_table->sizeHint().height()
+                          + tableHeight(qMin(m_table->topLevelItemCount(), 10));
+            resize(w, qBound(minimumHeight(), h, maximumHeight()));
+        }
     });
 
     if (kind == Kind::ToTrash) {
@@ -105,8 +125,8 @@ DeleteFilesDialog::DeleteFilesDialog(Kind kind, const QStringList &paths, int sk
                                                                    : QStringLiteral("Удалить безвозвратно"),
                                              QDialogButtonBox::DestructiveRole);
     QPushButton *cancel = buttons->addButton(QStringLiteral("Отмена"), QDialogButtonBox::RejectRole);
-    for (QPushButton *b : {remove, m_details})
-        b->setAutoDefault(false);
+    // Enter presses the button with the keyboard focus (as in every dialog);
+    // with the focus elsewhere it is "Cancel", never "Delete".
     cancel->setDefault(true);
     connect(remove, &QPushButton::clicked, this, &QDialog::accept);
     connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
@@ -128,13 +148,45 @@ DeleteFilesDialog::DeleteFilesDialog(Kind kind, const QStringList &paths, int sk
     bottom->addWidget(m_details);
     bottom->addWidget(buttons, 1);
     layout->addLayout(bottom);
-    setMinimumWidth(460);
+    updateSizeLimits();
     cancel->setFocus();
 
     connect(this, &QDialog::accepted, this, [this] {
         if (m_allPlaylists)
             QSettings().setValue(kAllPlaylistsKey, m_allPlaylists->isChecked());
     });
+}
+
+int DeleteFilesDialog::tableHeight(int rows) const
+{
+    return m_table->header()->sizeHint().height() + m_rowHeight * rows + 2 * m_table->frameWidth() + 2;
+}
+
+// Without the list it is a question of fixed size (nothing in it would use
+// more room). With the list it resizes, from a minimum where nothing
+// overlaps up to showing all of the list.
+void DeleteFilesDialog::updateSizeLimits()
+{
+    setMinimumSize(0, 0);
+    setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+    layout()->activate();
+    // Wrapped texts are tallest at the narrowest width, so the height they
+    // need there is enough at any width the dialog can get.
+    const int minW = qMax(kMinWidth, layout()->totalMinimumSize().width());
+    if (!m_table->isVisibleTo(this)) {
+        const int w = qMax(minW, sizeHint().width());
+        setFixedSize(w, qMax(layout()->totalHeightForWidth(w), layout()->totalMinimumSize().height()));
+        return;
+    }
+    const int minH = qMax(layout()->totalMinimumSize().height(), layout()->minimumHeightForWidth(minW));
+    setMinimumSize(minW, minH);
+
+    const QRect screen = this->screen() ? this->screen()->availableGeometry() : QRect(0, 0, 1280, 720);
+    const QMargins m = layout()->contentsMargins();
+    QSize most(m.left() + m.right() + m_tableFull.width(),
+               minH - m_table->minimumHeight() + m_tableFull.height());
+    most = most.boundedTo(QSize(screen.width() * 9 / 10, screen.height() * 85 / 100));
+    setMaximumSize(most.expandedTo(minimumSize()));
 }
 
 bool DeleteFilesDialog::fromAllPlaylists() const

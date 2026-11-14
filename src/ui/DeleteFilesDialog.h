@@ -25,7 +25,12 @@ public:
     QPushButton *detailsButton() const { return m_details; }
 
 private:
+    void updateSizeLimits();
+    int tableHeight(int rows) const;   // header, rows and frame
+
     QTreeWidget *m_table;
     QPushButton *m_details;
     QCheckBox *m_allPlaylists = nullptr;
+    QSize m_tableFull;   // the list with every row and full texts
+    int m_rowHeight = 0;
 };

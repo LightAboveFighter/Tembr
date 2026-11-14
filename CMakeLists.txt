@@ -101,6 +101,11 @@ if(TEMBR_BUILD_TESTS)
     add_test(NAME test_playlistmodel COMMAND test_playlistmodel)
     set_tests_properties(test_playlistmodel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+    add_executable(test_deletedialog tests/test_deletedialog.cpp src/ui/DeleteFilesDialog.cpp src/ui/DeleteFilesDialog.h)
+    target_link_libraries(test_deletedialog PRIVATE tembr_core Qt6::Widgets Qt6::Test)
+    add_test(NAME test_deletedialog COMMAND test_deletedialog)
+    set_tests_properties(test_deletedialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     # Manual tools (see the file headers).
     add_executable(playlist_probe tests/playlist_probe.cpp)
     target_link_libraries(playlist_probe PRIVATE tembr_core)
