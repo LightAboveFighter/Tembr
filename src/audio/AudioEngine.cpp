@@ -1,5 +1,7 @@
 #include "audio/AudioEngine.h"
 
+#include "core/MediaOpen.h"
+
 #include <QFile>
 #include <QTimer>
 
@@ -78,6 +80,7 @@ private:
 // FFmpeg demuxer + decoder + resampler for one file.
 struct Decoder
 {
+    MediaOpen::Interrupt interrupt;   // the decoder thread's stop flag, once it runs
     AVFormatContext *fmt = nullptr;
     AVCodecContext *codec = nullptr;
     SwrContext *swr = nullptr;
@@ -104,12 +107,14 @@ struct Decoder
 
     bool open(const QString &path, QString *error)
     {
-        const QByteArray name = path.contains(QLatin1String("://")) ? path.toUtf8() : QFile::encodeName(path);
-        if (avformat_open_input(&fmt, name.constData(), nullptr, nullptr) < 0) {
+        if (!MediaOpen::isAllowed(path)) {
+            *error = QStringLiteral("Этот вид адреса не поддерживается");
+            return false;
+        }
+        if (MediaOpen::open(&fmt, path, &interrupt) < 0) {
             *error = QStringLiteral("Не удалось открыть файл");
             return false;
         }
-        avformat_find_stream_info(fmt, nullptr);
         stream = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
         if (stream < 0) {
             *error = QStringLiteral("В файле нет звуковой дорожки");
@@ -444,6 +449,9 @@ bool AudioEngine::load(const QString &path, qint64 startMs, qint64 endMs)
     d->endFrame = endMs > 0 ? d->msToFrame(endMs) : 0;
     d->durationMs = endMs > 0 ? endMs - startMs : std::max<qint64>(0, dec->fileDurationMs - startMs);
     d->seekable = dec->seekable;
+    // From now on a blocking read gives up when the decoder thread is told
+    // to stop, so unload() never waits on a stalled stream.
+    dec->interrupt.quit = &d->quit;
     d->dec = std::move(dec);
 
     d->pending.clear();

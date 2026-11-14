@@ -1,5 +1,7 @@
 #include "core/MetadataReader.h"
 
+#include "core/MediaOpen.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -16,13 +18,12 @@ namespace {
 struct FormatContext
 {
     AVFormatContext *ctx = nullptr;
+    MediaOpen::Interrupt interrupt;   // ctx is closed in the destructor body, before this goes
     ~FormatContext() { avformat_close_input(&ctx); }
 
-    bool open(const QString &path)
+    bool open(const QString &path, bool findStreamInfo = true)
     {
-        const QByteArray name = path.contains(QLatin1String("://")) ? path.toUtf8()
-                                                                     : QFile::encodeName(path);
-        return avformat_open_input(&ctx, name.constData(), nullptr, nullptr) >= 0;
+        return MediaOpen::open(&ctx, path, &interrupt, findStreamInfo) >= 0;
     }
 };
 
@@ -88,7 +89,6 @@ Track read(Track t)
         return t;
     }
     t.missing = false;
-    avformat_find_stream_info(fc.ctx, nullptr);
 
     const int si = av_find_best_stream(fc.ctx, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
     AVStream *st = si >= 0 ? fc.ctx->streams[si] : nullptr;
@@ -151,7 +151,7 @@ Track read(Track t)
 QImage readCover(const QString &path)
 {
     FormatContext fc;
-    if (fc.open(path)) {
+    if (fc.open(path, false)) {   // attached pictures are known without stream info
         for (unsigned i = 0; i < fc.ctx->nb_streams; ++i) {
             AVStream *s = fc.ctx->streams[i];
             if ((s->disposition & AV_DISPOSITION_ATTACHED_PIC) && s->attached_pic.size > 0) {
@@ -181,7 +181,6 @@ QList<QPair<QString, QString>> readAllTags(const QString &path)
     FormatContext fc;
     if (!fc.open(path))
         return out;
-    avformat_find_stream_info(fc.ctx, nullptr);
 
     auto dump = [&](AVDictionary *dict) {
         const AVDictionaryEntry *e = nullptr;
