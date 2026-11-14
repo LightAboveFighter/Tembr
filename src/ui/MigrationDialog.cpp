@@ -2,6 +2,7 @@
 
 #include "core/Relocator.h"
 #include "migration/PhoneImport.h"
+#include "ui/DialogFrame.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -58,6 +59,7 @@ MigrationDialog::MigrationDialog(QWidget *parent)
     : QDialog(parent)
     , m_cancel(std::make_shared<std::atomic<bool>>(false))
 {
+    resizesLikeAWindow(this);
     setWindowTitle(QStringLiteral("Импорт плейлистов из AIMP"));
     resize(760, 640);
 

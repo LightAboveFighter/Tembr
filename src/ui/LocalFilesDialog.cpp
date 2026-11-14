@@ -1,5 +1,7 @@
 #include "ui/LocalFilesDialog.h"
 
+#include "ui/DialogFrame.h"
+
 #include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -53,6 +55,7 @@ LocalFilesDialog::LocalFilesDialog(const LocalFilesSettings &current, QWidget *p
     , m_watch(new QCheckBox(QStringLiteral("Следить за изменениями в папках")))
     , m_aimpNote(new QLabel)
 {
+    resizesLikeAWindow(this);
     setWindowTitle(QStringLiteral("Локальные файлы"));
     resize(600, 480);
 

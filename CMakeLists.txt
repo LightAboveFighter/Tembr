@@ -54,6 +54,7 @@ add_executable(tembr
     src/ui/PlaylistPage.h src/ui/PlaylistPage.cpp
     src/ui/TrackInfoDialog.h src/ui/TrackInfoDialog.cpp
     src/ui/Theme.h src/ui/Theme.cpp
+    src/ui/DialogFrame.h
     src/ui/Icons.h src/ui/Icons.cpp
     src/ui/NowPlayingPanel.h src/ui/NowPlayingPanel.cpp
     src/ui/SettingsDialog.h src/ui/SettingsDialog.cpp

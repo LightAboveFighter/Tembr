@@ -1,6 +1,7 @@
 #include "ui/SettingsDialog.h"
 
 #include "core/MediaCollector.h"
+#include "ui/DialogFrame.h"
 #include "ui/HotkeyEdit.h"
 #include "ui/Icons.h"
 
@@ -48,6 +49,7 @@ void AppSettings::save() const
 SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
     : QDialog(parent)
 {
+    resizesLikeAWindow(this);
     setWindowTitle(QStringLiteral("Настройки"));
     setMinimumWidth(560);
 

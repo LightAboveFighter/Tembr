@@ -1,6 +1,7 @@
 #include "ui/TrackInfoDialog.h"
 
 #include "core/MetadataReader.h"
+#include "ui/DialogFrame.h"
 
 #include <QDesktopServices>
 #include <QDialogButtonBox>
@@ -19,6 +20,7 @@
 TrackInfoDialog::TrackInfoDialog(const Track &track, QWidget *parent)
     : QDialog(parent)
 {
+    resizesLikeAWindow(this);
     const Track t = track.isUrl() ? track : MetadataReader::read(track);
     setWindowTitle(t.displayTitle());
     resize(640, 480);
