@@ -93,6 +93,7 @@ signals:
 
 private:
     void startScan(const TrackList &tracks);
+    void removeScattered(const QList<int> &descendingRows);
     void applyScanned(const Track &t);
     void rebuildIndex();
     void rememberCurrent();   // before rows go away

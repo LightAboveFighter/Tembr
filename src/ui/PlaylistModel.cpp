@@ -212,8 +212,17 @@ void PlaylistModel::insertTracks(int row, const TrackList &tracks)
             t.uid = Track::newUid();
     }
     beginInsertRows({}, row, row + int(toInsert.size()) - 1);
-    for (int i = 0; i < toInsert.size(); ++i)
-        m_tracks.insert(row + i, toInsert.at(i));
+    if (row == m_tracks.size()) {
+        m_tracks.append(toInsert);
+    } else {
+        // In one go: inserting track by track moved the tail once per track.
+        TrackList merged;
+        merged.reserve(m_tracks.size() + toInsert.size());
+        merged.append(m_tracks.mid(0, row));
+        merged.append(toInsert);
+        merged.append(m_tracks.mid(row));
+        m_tracks = std::move(merged);
+    }
     rebuildIndex();
     endInsertRows();
 
@@ -238,20 +247,59 @@ void PlaylistModel::removeRowList(QList<int> rows)
     if (rows.isEmpty())
         return;
     rememberCurrent();
-    // Remove contiguous runs at once (rows are in descending order).
-    for (int i = 0; i < rows.size();) {
-        int j = i;
-        while (j + 1 < rows.size() && rows[j + 1] == rows[j] - 1)
-            ++j;
-        const int first = rows[j], last = rows[i];
-        beginRemoveRows({}, first, last);
-        m_tracks.remove(first, last - first + 1);
-        endRemoveRows();
-        i = j + 1;
+    int runs = 1;
+    for (int i = 1; i < rows.size(); ++i)
+        runs += rows[i] != rows[i - 1] - 1;
+    if (runs <= 16) {
+        // Remove contiguous runs at once (rows are in descending order).
+        for (int i = 0; i < rows.size();) {
+            int j = i;
+            while (j + 1 < rows.size() && rows[j + 1] == rows[j] - 1)
+                ++j;
+            const int first = rows[j], last = rows[i];
+            beginRemoveRows({}, first, last);
+            m_tracks.remove(first, last - first + 1);
+            endRemoveRows();
+            i = j + 1;
+        }
+    } else {
+        removeScattered(rows);
     }
     rebuildIndex();
     checkCurrent();
     emit contentsChanged();
+}
+
+// Many scattered rows: one pass over the list and one layout change. Row by
+// row (or run by run) each removal moved the tail and was announced on its
+// own, so the views and the filter did a pass over the list for each.
+// Persistent indexes (selection, current row) follow their tracks; those of
+// removed rows become invalid.
+void PlaylistModel::removeScattered(const QList<int> &descendingRows)
+{
+    emit layoutAboutToBeChanged({}, QAbstractItemModel::NoLayoutChangeHint);
+    QVector<int> newRow(m_tracks.size());
+    QVector<bool> gone(m_tracks.size(), false);
+    for (int r : descendingRows)
+        gone[r] = true;
+    TrackList kept;
+    kept.reserve(m_tracks.size() - descendingRows.size());
+    for (int r = 0; r < m_tracks.size(); ++r) {
+        newRow[r] = gone[r] ? -1 : int(kept.size());
+        if (!gone[r])
+            kept.append(m_tracks.at(r));
+    }
+    m_tracks = std::move(kept);
+    const QModelIndexList from = persistentIndexList();
+    QModelIndexList to;
+    to.reserve(from.size());
+    for (const QModelIndex &i : from) {
+        const int r = i.row() < newRow.size() ? newRow[i.row()] : -1;
+        to << (r < 0 ? QModelIndex() : index(r, i.column()));
+    }
+    changePersistentIndexList(from, to);
+    rebuildIndex();   // before anyone connected to layoutChanged looks rows up
+    emit layoutChanged({}, QAbstractItemModel::NoLayoutChangeHint);
 }
 
 void PlaylistModel::removeMissing()

@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QSignalSpy>
+#include <QSortFilterProxyModel>
 #include <QTest>
 
 namespace {
@@ -163,6 +164,52 @@ private slots:
 
     // Choosing a sort counts even when there is nothing to reorder yet
     // (Local files remember it before the first scan is in).
+    // Many scattered rows go in one pass; what refers to the rows left
+    // (selection, current track, a filtered view) follows them.
+    void scatteredRemovalKeepsTheRest()
+    {
+        QStringList names;
+        for (int i = 0; i < 200; ++i)
+            names << QStringLiteral("t%1").arg(i, 3, 10, QLatin1Char('0'));
+        PlaylistModel m;
+        m.insertTracks(-1, make(names));
+        m.setCurrent(m.track(101).uid);
+        QSortFilterProxyModel proxy;
+        proxy.setSourceModel(&m);
+        proxy.setFilterFixedString(QStringLiteral("t1"));
+        proxy.setFilterKeyColumn(PlaylistModel::ColTitle);
+        const int shownBefore = proxy.rowCount();
+        const QPersistentModelIndex kept = m.index(101, 0), removed = m.index(100, 0);
+
+        QList<int> even;
+        for (int r = 0; r < 200; r += 2)
+            even << r;
+        m.removeRowList(even);   // 100 runs
+
+        QCOMPARE(m.rowCount(), 100);
+        for (int r = 0; r < m.rowCount(); ++r)
+            QCOMPARE(m.track(r).title, names[2 * r + 1]);
+        QVERIFY(kept.isValid());
+        QCOMPARE(kept.row(), 50);
+        QVERIFY(!removed.isValid());
+        QCOMPARE(m.currentRow(), 50);
+        QCOMPARE(m.rowOfUid(m.track(50).uid), 50);
+        QCOMPARE(proxy.rowCount(), shownBefore / 2);
+        for (int r = 0; r < proxy.rowCount(); ++r)
+            QVERIFY(proxy.index(r, PlaylistModel::ColTitle).data().toString().startsWith(QLatin1String("t1")));
+    }
+
+    void insertInTheMiddle()
+    {
+        PlaylistModel m;
+        m.insertTracks(-1, make({QStringLiteral("a"), QStringLiteral("d")}));
+        m.insertTracks(1, make({QStringLiteral("b"), QStringLiteral("c")}));
+        QCOMPARE(m.rowCount(), 4);
+        for (int r = 0; r < 4; ++r)
+            QCOMPARE(title(m, r), QString(QChar(u'a' + r)));
+        QCOMPARE(m.rowOfUid(m.track(3).uid), 3);
+    }
+
     void sortChoiceCountsForTinyLists()
     {
         PlaylistModel m;
