@@ -65,7 +65,7 @@ private:
     void closePage(int index);
     void renamePage(int index);
 
-    void playRow(PlaylistPage *page, int row);
+    void playRow(PlaylistPage *page, int row, bool start = true);   // start = false: load only
     void playOrResume();
     void playNext();
     void playPrevious();
@@ -85,6 +85,10 @@ private:
     void openPlaylists();
     void savePlaylist();
     void findMovedFiles();
+    // Deletes the files of the selected tracks from the device (to the trash,
+    // after asking), then drops them from this playlist.
+    void deleteSelectedFiles();
+    void forgetDeletedFiles(PlaylistPage *from, const QStringList &paths, bool fromAllPlaylists);
     void importFromAimp();
     void rememberMoves(const QList<QPair<QString, QString>> &moves);
     void offerToFindMoved(int missing, int total);

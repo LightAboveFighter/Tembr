@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 
+#include "core/FileTrash.h"
 #include "core/LocalFiles.h"
 #include "core/MediaCollector.h"
 #include "core/MetadataReader.h"
@@ -7,6 +8,7 @@
 #include "core/PlaylistIO.h"
 #include "core/Relocator.h"
 #include "platform/Mpris.h"
+#include "ui/DeleteFilesDialog.h"
 #include "ui/Icons.h"
 #include "ui/LocalFilesDialog.h"
 #include "ui/MigrationDialog.h"
@@ -257,6 +259,7 @@ void MainWindow::buildActions()
         if (auto *p = currentPage(); p && !refuseReadOnly(p))
             p->removeSelected();
     });
+    pl->addAction(QStringLiteral("Удалить с диска…"), this, &MainWindow::deleteSelectedFiles);
     pl->addAction(QStringLiteral("Удалить отсутствующие файлы"), this, [this] {
         if (auto *p = currentPage(); p && !refuseReadOnly(p))
             p->model()->removeMissing();
@@ -764,7 +767,7 @@ void MainWindow::showLocalFilesSettings()
 
 // --- Playback ----------------------------------------------------------------
 
-void MainWindow::playRow(PlaylistPage *page, int row)
+void MainWindow::playRow(PlaylistPage *page, int row, bool start)
 {
     if (!page || row < 0 || row >= page->model()->rowCount())
         return;
@@ -788,7 +791,8 @@ void MainWindow::playRow(PlaylistPage *page, int row)
     }
     m_failStreak = 0;
     page->model()->setMissing(row, false);
-    m_engine->play();
+    if (start)
+        m_engine->play();
     updateNowPlaying();
     // The title on screen when it cannot be seen in the window (AIMP's OSD).
     if (TrackOsd::wanted(m_settings.osd.when, isMinimized(), isVisible(), isActiveWindow()))
@@ -1011,10 +1015,11 @@ void MainWindow::showContextMenu(const QPoint &globalPos)
             });
         }
         menu.addSeparator();
-        if (!page->isReadOnly()) {
+        if (!page->isReadOnly())
             menu.addAction(QStringLiteral("Удалить из плейлиста"), page, &PlaylistPage::removeSelected);
-            menu.addSeparator();
-        }
+        if (!t.isUrl())
+            menu.addAction(QStringLiteral("Удалить с диска…"), this, &MainWindow::deleteSelectedFiles);
+        menu.addSeparator();
     }
     if (page->isReadOnly()) {
         menu.addAction(QStringLiteral("Обновить"), this, [this] { m_localFiles->rescan(m_localPage->model()->tracks()); });
@@ -1262,6 +1267,124 @@ void MainWindow::importFromAimp()
     updateNowPlaying();   // a replaced tab may have held the current track
     updateStats();
     QMessageBox::information(this, windowTitle(), QStringLiteral("Импорт завершён.\n\n") + r.summary);
+}
+
+void MainWindow::deleteSelectedFiles()
+{
+    PlaylistPage *page = currentPage();
+    if (!page)
+        return;
+    QStringList paths;
+    int cueTracks = 0;
+    int absent = 0;   // no file there (a drive not mounted?): nothing to delete, keep the rows
+    QSet<QString> seen;
+    for (int row : page->selectedSourceRows()) {
+        const Track &t = page->model()->track(row);
+        if (t.isUrl())
+            continue;
+        if (t.isCueTrack()) {
+            ++cueTracks;   // its file is the whole album
+            continue;
+        }
+        if (seen.contains(t.path))
+            continue;
+        seen.insert(t.path);
+        if (!QFileInfo::exists(t.path)) {
+            ++absent;
+            continue;
+        }
+        paths << t.path;
+    }
+    if (paths.isEmpty()) {
+        statusBar()->showMessage(
+            absent ? QStringLiteral("Файлов выбранных треков нет на диске (диск отключён или они уже удалены): ничего не удалено.")
+            : cueTracks ? QStringLiteral("Треки из CUE не удаляются с диска: их файл содержит весь альбом.")
+                        : QStringLiteral("Выберите треки, файлы которых нужно удалить."),
+            6000);
+        return;
+    }
+
+    DeleteFilesDialog confirm(DeleteFilesDialog::Kind::ToTrash, paths, cueTracks, this);
+    if (confirm.exec() != QDialog::Accepted)
+        return;
+    const bool fromAll = confirm.fromAllPlaylists();
+
+    FileTrash::Result r = FileTrash::moveToTrash(paths);
+    if (!r.failed.isEmpty()) {
+        DeleteFilesDialog ask(DeleteFilesDialog::Kind::Forever, r.failed, 0, this);
+        if (ask.exec() == QDialog::Accepted) {
+            const FileTrash::Result gone = FileTrash::removeForever(r.failed);
+            r.done += gone.done;
+            r.failed = gone.failed;
+            if (!r.failed.isEmpty()) {
+                QMessageBox::warning(this, QStringLiteral("Удалить с диска"),
+                                     QStringLiteral("Не удалось удалить:\n\n") + r.failed.join(QLatin1Char('\n')));
+            }
+        }
+    }
+    forgetDeletedFiles(page, r.done, fromAll);
+    if (absent && !r.done.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("Удалено с диска файлов: %1. Не найдено на диске и пропущено: %2.")
+                                     .arg(r.done.size()).arg(absent),
+                                 6000);
+    }
+}
+
+// The files are gone from this playlist (and from all, if asked; elsewhere
+// they are marked missing). If the playing track was one of them, the player
+// moves on at once to the next track that was not deleted.
+void MainWindow::forgetDeletedFiles(PlaylistPage *from, const QStringList &paths, bool fromAllPlaylists)
+{
+    if (paths.isEmpty())
+        return;
+    const QSet<QString> gone(paths.cbegin(), paths.cend());
+    const Track *playing = m_playingPage ? m_playingPage->model()->currentTrack() : nullptr;
+    const bool playingGone = playing && gone.contains(playing->path);
+
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(i));
+        if (!page || page->isReadOnly())
+            continue;   // Local files: rescanned below
+        QList<int> rows;
+        const TrackList &tracks = page->model()->tracks();
+        for (int row = 0; row < tracks.size(); ++row) {
+            if (gone.contains(tracks[row].path))
+                rows << row;
+        }
+        if (page == from || fromAllPlaylists) {
+            page->model()->removeRowList(rows);
+        } else {
+            for (int row : std::as_const(rows))
+                page->model()->setMissing(row, true);
+        }
+    }
+
+    if (playingGone && m_playingPage) {
+        PlaylistModel *model = m_playingPage->model();
+        int next = -1;
+        if (model->isCurrentDetached()) {
+            next = model->nextRow();   // its row was removed: the first survivor after it
+        } else {
+            for (int row = model->currentRow() + 1; row < model->rowCount() && next < 0; ++row) {
+                if (!gone.contains(model->track(row).path))
+                    next = row;   // still listed (Local files, marked missing): skip deleted ones
+            }
+        }
+        const AudioEngine::State state = m_engine->state();
+        if (next >= 0 && state != AudioEngine::State::Stopped) {
+            playRow(m_playingPage, next, state == AudioEngine::State::Playing);   // paused: stays stopped there
+            m_playingPage->scrollToSourceRow(next);
+        } else if (next < 0) {
+            m_engine->stop();   // nothing after it
+            model->setCurrent(0);
+            updateNowPlaying();
+        }
+    }
+
+    if (m_localPage)
+        m_localFiles->rescan(m_localPage->model()->tracks());   // at once, not after the watcher's delay
+    updateStats();
+    statusBar()->showMessage(QStringLiteral("Удалено с диска файлов: %1").arg(paths.size()), 5000);
 }
 
 void MainWindow::savePlaylist()
