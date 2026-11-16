@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio/AudioEngine.h"
+#include "core/PlaylistIO.h"
 #include "core/Track.h"
 #include "ui/SettingsDialog.h"
 
@@ -9,6 +10,8 @@
 #include <QMainWindow>
 #include <QPointer>
 #include <QTimer>
+
+#include <functional>
 
 class QAction;
 class QComboBox;
@@ -26,18 +29,44 @@ class NowPlayingPanel;
 class TrackOsd;
 class PlaylistPage;
 
+// What is read from disk at startup, on a worker thread.
+struct SessionSnapshot
+{
+    TrackList localFiles;            // the Local files cache
+    QList<PlaylistData> playlists;   // the open playlists, in tab order
+    QStringList keptAside;           // copies of playlist files that could not be read in full
+};
+
+struct MainWindowOptions
+{
+    // MPRIS on the session bus, global hotkeys (gsettings) and the tray icon.
+    // Off in tests: they would take the bus name of a running player and
+    // overwrite the desktop's shortcuts.
+    bool desktopIntegration = true;
+    // Reads the session; runs on a worker thread. Empty: the files on disk.
+    std::function<SessionSnapshot()> loadSession;
+};
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
 public:
-    explicit MainWindow(QWidget *parent = nullptr);
+    explicit MainWindow(const MainWindowOptions &options = {}, QWidget *parent = nullptr);
     ~MainWindow() override;
 
+    // The playlists of the last session are read in the background; until
+    // they are in, the playlists cannot be used and nothing is saved.
+    bool isSessionLoaded() const { return m_sessionLoaded; }
+
     // Files given on the command line: added to the current playlist and played.
+    // Before the session is loaded: once it is, into the playlist restored.
     void openPaths(const QStringList &paths);
     // "play-pause", "play", "pause", "stop", "next", "previous",
     // "volume-up", "volume-down", "show" — from MPRIS, tray, `tembr --next`.
     void handleCommand(const QString &command);
+
+signals:
+    void sessionLoaded();
 
 protected:
     void closeEvent(QCloseEvent *e) override;
@@ -104,7 +133,15 @@ private:
     enum class SaveScope { Playlists, Everything };
     void saveSession(SaveScope scope = SaveScope::Everything);
     void scheduleSave();   // soon after a change, so a crash or kill loses little
-    void restoreSession();
+    void restoreSession();   // settings at once, playlists in the background
+    void applySession(const SessionSnapshot &session);
+    void rescanLocal();      // Local files from the folders (after the session is loaded)
+
+    MainWindowOptions m_options;
+    bool m_sessionLoaded = false;
+    QList<QStringList> m_pendingOpen;     // openPaths() before the session was loaded
+    QStringList m_pendingCommands;        // play, next, ... before it was loaded
+    QList<QPointer<QAction>> m_needSession;   // menu items that work on playlists
 
     AudioEngine *m_engine;
     MprisService *m_mpris;

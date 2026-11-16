@@ -65,7 +65,9 @@ public:
     LocalFilesSettings settings() const { return m_settings; }
     void setSettings(const LocalFilesSettings &s);   // saves; rescan() is up to the caller
 
-    TrackList loadCache() const;
+    // The list as it was last saved; safe on any thread.
+    static QString cacheFile();
+    static TrackList loadCache(const QString &file);
     void saveCache(const TrackList &tracks) const;
 
     // Starts a background scan; `known` are the tracks shown now (their tags

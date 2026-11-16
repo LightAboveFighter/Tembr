@@ -430,7 +430,7 @@ private slots:
 
         const TrackList saved = LocalLibrary::scan(s, {});
         lf.saveCache(saved);
-        const TrackList loaded = lf.loadCache();
+        const TrackList loaded = LocalFiles::loadCache(LocalFiles::cacheFile());
         QCOMPARE(loaded.size(), 2);
         QCOMPARE(loaded[0].addedMs, saved[0].addedMs);   // dates survive restarts
         QCOMPARE(loaded[0].modifiedMs, saved[0].modifiedMs);
