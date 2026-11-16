@@ -697,6 +697,48 @@ private slots:
         QVERIFY(w.statusBar()->currentMessage().contains(QStringLiteral(": 1")));
     }
 
+    // Tracks moved within a playlist are saved like any other change: by
+    // the autosave, without closing the window.
+    void reorderIsAutosaved()
+    {
+        SessionSnapshot snap;
+        snap.playlists = {playlist(QStringLiteral("A"), {audio(QStringLiteral("r0.wav")), audio(QStringLiteral("r1.wav")),
+                                                         audio(QStringLiteral("r2.wav"))})};
+        MainWindow w(options([snap] { return snap; }));
+        QSignalSpy loaded(&w, &MainWindow::sessionLoaded);
+        w.show();
+        QVERIFY(loaded.wait(10000));
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        PlaylistPage *a = playlistAt(w, 0);
+        a->view()->selectionModel()->select(a->proxy()->index(2, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        std::unique_ptr<TrackDragData> data;
+        PlaylistView::setDragRunner([&data](QDrag *drag) {
+            auto *tracks = qobject_cast<TrackDragData *>(drag->mimeData());
+            data = std::make_unique<TrackDragData>(tracks->source(), tracks->uids());
+        });
+        emit a->view()->dragRequested();
+        PlaylistView::setDragRunner({});
+        QVERIFY(data);
+        const QPoint at = a->view()->visualRect(a->proxy()->index(0, 1)).center();   // before r0
+        QWidget *vp = a->view()->viewport();
+        QDragEnterEvent enter(at, Qt::CopyAction | Qt::MoveAction, data.get(), Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(vp, &enter);
+        QDropEvent drop(at, Qt::CopyAction | Qt::MoveAction, data.get(), Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(vp, &drop);
+        QCOMPARE(a->model()->track(0).title, QStringLiteral("r2"));
+
+        const auto savedOrder = [] {
+            QStringList out;
+            const auto loaded = SessionFiles::load(playlistDir());
+            if (loaded.playlists.size() == 1) {
+                for (const Track &t : loaded.playlists[0].tracks)
+                    out << QFileInfo(t.path).completeBaseName();
+            }
+            return out;
+        };
+        QTRY_COMPARE_WITH_TIMEOUT(savedOrder(), (QStringList{"r2", "r0", "r1"}), 10000);
+    }
+
     // The header of the right pane lists the playlists; picking one shows
     // it (the pages are kept, not made again) and makes its pane active.
     void pickingFromTheHeaderSwitchesThePlaylist()
