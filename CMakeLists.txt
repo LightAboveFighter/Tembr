@@ -67,6 +67,7 @@ add_library(tembr_ui STATIC
     src/ui/PlaylistModel.h src/ui/PlaylistModel.cpp
     src/ui/PlaylistFilterProxy.h src/ui/PlaylistFilterProxy.cpp
     src/ui/PlaylistPage.h src/ui/PlaylistPage.cpp
+    src/ui/PlaylistPanes.h src/ui/PlaylistPanes.cpp
     src/ui/TrackInfoDialog.h src/ui/TrackInfoDialog.cpp
     src/ui/Theme.h src/ui/Theme.cpp
     src/ui/DialogFrame.h

@@ -130,6 +130,14 @@ QTabBar::tab {
 QTabBar::tab:hover { color: #e6e6e6; }
 QTabBar::tab:selected { color: #ffffff; border-bottom: 2px solid #ff8a00; }
 
+/* Headers of the two lists: the active one (focus was there last) is marked
+   as the selected tab used to be, the other is dimmed. */
+#PaneHeader { border-bottom: 2px solid transparent; }
+#PaneHeader[active="true"] { border-bottom: 2px solid #ff8a00; }
+#PaneHeader QLabel, #PaneHeader QToolButton { color: #8c8c8c; }
+#PaneHeader[active="true"] QLabel, #PaneHeader[active="true"] QToolButton { color: #ffffff; }
+#PlaylistPicker { padding: 3px 6px; }
+
 QTableView {
     background: #151515; alternate-background-color: #1a1a1a; border: none;
     gridline-color: #222; outline: 0;
