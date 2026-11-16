@@ -10,6 +10,16 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(TEMBR_BUILD_TESTS "Build unit tests" ON)
+set(TEMBR_SANITIZE "" CACHE STRING "Sanitizers for a checking build: address,undefined or thread (empty: none)")
+
+# Our C++ only: miniaudio is C and is included as a system header.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wall> $<$<COMPILE_LANGUAGE:CXX>:-Wextra>)
+endif()
+if(TEMBR_SANITIZE)
+    add_compile_options(-fsanitize=${TEMBR_SANITIZE} -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=${TEMBR_SANITIZE})
+endif()
 
 find_package(Qt6 6.2 REQUIRED COMPONENTS Core Gui Widgets Concurrent DBus)
 find_package(PkgConfig REQUIRED)
