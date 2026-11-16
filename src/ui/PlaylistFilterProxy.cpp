@@ -5,7 +5,9 @@
 void PlaylistFilterProxy::setQuery(const QString &text, TrackQuery::Field defaultField)
 {
     m_query = TrackQuery::parse(text, defaultField);
-    invalidateFilter();
+    // One layoutChanged instead of a signal for every run of rows that comes
+    // or goes (with scattered hits: thousands, each redrawn and counted).
+    invalidate();
 }
 
 void PlaylistFilterProxy::sort(int column, Qt::SortOrder order)
