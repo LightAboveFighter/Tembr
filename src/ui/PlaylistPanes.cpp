@@ -10,6 +10,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMenu>
+#include <QMimeData>
 #include <QPushButton>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -17,7 +18,40 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
+#include <functional>
+
 namespace {
+
+// The free right pane takes files dropped from a file manager: they make a
+// playlist, as files added from the menu do.
+class FileDropArea : public QWidget
+{
+public:
+    std::function<void(const QStringList &)> dropped;
+
+    FileDropArea() { setAcceptDrops(true); }
+
+protected:
+    void dragEnterEvent(QDragEnterEvent *e) override
+    {
+        if (e->mimeData()->hasUrls())
+            e->acceptProposedAction();
+    }
+    void dragMoveEvent(QDragMoveEvent *e) override
+    {
+        if (e->mimeData()->hasUrls())
+            e->acceptProposedAction();
+    }
+    void dropEvent(QDropEvent *e) override
+    {
+        QStringList paths;
+        for (const QUrl &url : e->mimeData()->urls())
+            paths << (url.isLocalFile() ? url.toLocalFile() : url.toString());
+        e->acceptProposedAction();
+        if (dropped && !paths.isEmpty())
+            dropped(paths);
+    }
+};
 
 // Names are shown as button and menu text, where '&' marks a shortcut.
 QString menuText(const QString &name)
@@ -93,13 +127,15 @@ PlaylistPanes::PlaylistPanes(QWidget *parent)
     rightLayout->addWidget(m_rightHeader);
 
     // No playlists: the pane stays free, with a way to make one.
-    m_placeholder = new QWidget;
+    auto *drop = new FileDropArea;
+    drop->dropped = [this](const QStringList &paths) { emit filesDropped(paths); };
+    m_placeholder = drop;
     auto *ph = new QVBoxLayout(m_placeholder);
     ph->addStretch(2);
     auto *text = new QLabel(QStringLiteral("Плейлистов пока нет"));
     text->setAlignment(Qt::AlignCenter);
     text->setForegroundRole(QPalette::PlaceholderText);
-    auto *hint = new QLabel(QStringLiteral("Добавленные файлы попадут в новый плейлист."));
+    auto *hint = new QLabel(QStringLiteral("Добавленные или перетащенные сюда файлы попадут в новый плейлист."));
     hint->setAlignment(Qt::AlignCenter);
     hint->setWordWrap(true);
     hint->setForegroundRole(QPalette::PlaceholderText);

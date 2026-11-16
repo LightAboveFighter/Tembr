@@ -81,6 +81,8 @@ signals:
     void shownChanged(PlaylistPage *page);   // nullptr: no playlist (placeholder)
     void activeChanged(PlaylistPage *page);
     void orderChanged();
+    // Files dropped on the free right pane (no playlists yet).
+    void filesDropped(const QStringList &paths);
 
 private:
     void fillMenu();

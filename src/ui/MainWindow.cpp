@@ -365,6 +365,11 @@ void MainWindow::buildUi()
     connect(m_panes, &PlaylistPanes::shownChanged, this, follow);
     connect(m_panes, &PlaylistPanes::activeChanged, this, follow);
     connect(m_panes, &PlaylistPanes::orderChanged, this, &MainWindow::scheduleSave);
+    connect(m_panes, &PlaylistPanes::filesDropped, this, [this](const QStringList &paths) {
+        PlaylistPage *page = editablePage();   // none yet: a new one
+        bringUp(page);
+        page->addPaths(paths);
+    });
     rightLayout->addWidget(m_panes, 1);
 
     m_splitter = new QSplitter(Qt::Horizontal);

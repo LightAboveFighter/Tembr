@@ -19,6 +19,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMimeData>
+#include <QPushButton>
 #include <QStatusBar>
 #include <QTimer>
 #include <QSemaphore>
@@ -590,6 +592,38 @@ private slots:
         QCOMPARE(w.panes()->activePage(), made);
         QTRY_COMPARE(made->model()->rowCount(), 1);
         QCOMPARE(made->model()->track(0).path, file);
+        w.handleCommand(QStringLiteral("stop"));
+    }
+
+    // Files dropped from a file manager on the free right pane make a
+    // playlist too.
+    void filesDroppedOnTheFreePaneMakeAPlaylist()
+    {
+        MainWindow w(options([] { return SessionSnapshot{}; }));
+        QSignalSpy loaded(&w, &MainWindow::sessionLoaded);
+        w.show();
+        QVERIFY(loaded.wait(10000));
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        QWidget *free = nullptr;
+        for (QPushButton *b : w.panes()->findChildren<QPushButton *>()) {
+            if (b->text() == QStringLiteral("Новый плейлист"))
+                free = b->parentWidget();
+        }
+        QVERIFY(free && free->isVisible() && free->acceptDrops());
+
+        const QString file = audio(QStringLiteral("dropped.wav"));
+        QMimeData mime;
+        mime.setUrls({QUrl::fromLocalFile(file)});
+        const QPoint pos = free->rect().center();
+        QDragEnterEvent enter(pos, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(free, &enter);
+        QVERIFY(enter.isAccepted());
+        QDropEvent drop(pos, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(free, &drop);
+        QCOMPARE(playlistCount(w), 1);
+        QCOMPARE(w.panes()->shownPlaylist(), playlistAt(w, 0));
+        QTRY_COMPARE(playlistAt(w, 0)->model()->rowCount(), 1);
+        QCOMPARE(playlistAt(w, 0)->model()->track(0).path, file);
     }
 
     // The header of the right pane lists the playlists; picking one shows
