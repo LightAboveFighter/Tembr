@@ -287,6 +287,64 @@ void PlaylistModel::removeRowList(QList<int> rows)
     emit contentsChanged();
 }
 
+int PlaylistModel::moveTracks(QList<int> rows, int before)
+{
+    if (m_readOnly)
+        return -1;
+    const int count = int(m_tracks.size());
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    rows.erase(std::remove_if(rows.begin(), rows.end(), [count](int r) { return r < 0 || r >= count; }), rows.end());
+    if (rows.isEmpty())
+        return -1;
+    before = qBound(0, before, count);
+
+    QVector<bool> moved(count, false);
+    for (int r : std::as_const(rows))
+        moved[r] = true;
+    // Where the block goes among the tracks that stay: after those of them
+    // above `before`.
+    int target = 0;
+    for (int r = 0; r < before; ++r)
+        target += !moved[r];
+    // Already together and there: nothing to do (dropped onto itself).
+    if (rows.last() - rows.first() + 1 == rows.size() && target == rows.first())
+        return -1;
+
+    emit layoutAboutToBeChanged({}, QAbstractItemModel::NoLayoutChangeHint);
+    QVector<int> newRow(count);
+    TrackList reordered;
+    reordered.reserve(count);
+    auto take = [&](int r) {
+        newRow[r] = int(reordered.size());
+        reordered.append(m_tracks.at(r));
+    };
+    const auto takeMoved = [&] {
+        for (int m : std::as_const(rows))
+            take(m);
+    };
+    int kept = 0;
+    for (int r = 0; r < count; ++r) {
+        if (moved[r])
+            continue;
+        if (kept++ == target)
+            takeMoved();
+        take(r);
+    }
+    if (kept == target)   // at the end
+        takeMoved();
+    const QModelIndexList from = persistentIndexList();
+    QModelIndexList to;
+    to.reserve(from.size());
+    for (const QModelIndex &idx : from)
+        to.append(index(newRow[idx.row()], idx.column()));
+    changePersistentIndexList(from, to);
+    m_tracks = std::move(reordered);
+    rebuildIndex();   // before anyone connected to layoutChanged looks rows up
+    emit layoutChanged({}, QAbstractItemModel::NoLayoutChangeHint);
+    return target;
+}
+
 // Many scattered rows: one pass over the list and one layout change. Row by
 // row (or run by run) each removal moved the tail and was announced on its
 // own, so the views and the filter did a pass over the list for each.
