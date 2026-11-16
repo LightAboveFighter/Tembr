@@ -185,6 +185,11 @@ void PlaylistModel::setTracks(const TrackList &tracks)
     endResetModel();
     checkCurrent();
 
+    // Scans of the list replaced are cancelled: what they had not read yet
+    // is in this one (Local files is replaced on every rescan; on a first run
+    // with files still being copied, full-library scans used to pile up).
+    for (auto *w : std::as_const(m_watchers))
+        w->cancel();
     TrackList toScan;
     for (const Track &t : std::as_const(m_tracks)) {
         if (!t.scanned && !t.isUrl())
