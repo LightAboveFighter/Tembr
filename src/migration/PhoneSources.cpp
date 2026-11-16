@@ -131,9 +131,14 @@ public:
         return r.out;
     }
 
-    bool exists(int storage, const QString &rel) override
+    // One round trip. Old Androids may lack `stat`: then `wc -c`.
+    qint64 fileSize(int storage, const QString &rel) override
     {
-        return shell(QStringLiteral("[ -f %1 ] && echo y").arg(shq(abs(storage, rel)))).out.trimmed() == "y";
+        const QString p = shq(abs(storage, rel));
+        const ProcResult r = shell(QStringLiteral("[ -f %1 ] && { stat -c %s %1 2>/dev/null || wc -c < %1; }").arg(p));
+        bool ok = false;
+        const qint64 size = QString::fromUtf8(r.out).trimmed().section(QLatin1Char('\n'), 0, 0).trimmed().toLongLong(&ok);
+        return ok && size >= 0 ? size : -1;
     }
 
     bool copyTo(int storage, const QString &rel, const QString &localPath, QString *error) override
@@ -232,7 +237,11 @@ public:
         return f.readAll();
     }
 
-    bool exists(int storage, const QString &rel) override { return QFileInfo(abs(storage, rel)).isFile(); }
+    qint64 fileSize(int storage, const QString &rel) override
+    {
+        const QFileInfo fi(abs(storage, rel));
+        return fi.isFile() ? fi.size() : -1;
+    }
 
     bool copyTo(int storage, const QString &rel, const QString &localPath, QString *error) override
     {

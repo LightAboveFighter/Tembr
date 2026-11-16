@@ -4,6 +4,8 @@
 #include "core/Relocator.h"
 #include "migration/PhoneSources.h"
 
+#include <QHash>
+
 #include <functional>
 
 namespace Migration {
@@ -24,12 +26,23 @@ struct PhoneRef
 PhoneRef mapPhoneEntry(const QString &entry, const QList<PhoneStorage> &storages, int playlistStorage,
                        const QString &playlistDir);
 
+// Files placed in the copy folder during one import: local path (lower
+// case) -> the phone file it holds. Shared by the playlists of one import, so
+// that two phone files never end up as one local file, even with the same size.
+using PhoneCopyClaims = QHash<QString, QString>;
+
 struct PhoneImportOptions
 {
     const Relocator::Index *library = nullptr;   // music on this computer, matched by file name (and size)
     // Copy tracks not found locally into this folder (empty = don't), keeping
-    // the phone's folders below its top "Music/" folder.
+    // the phone's folders below its top "Music/" folder. Two phone files that
+    // would land in one place (Music/x.mp3 and x.mp3, the same path on two
+    // storages) get different ones: the path with "Music/", then "x (2).mp3".
+    // A file already there is taken only if its size is that of the phone
+    // file (across imports a file of the same name and size is taken for
+    // the same: no hashes, which over MTP would read every file twice).
     QString copyMissingTo;
+    PhoneCopyClaims *claims = nullptr;   // null: claims of this playlist only
 };
 
 struct PhoneImportStats
