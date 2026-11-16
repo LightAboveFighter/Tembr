@@ -427,6 +427,38 @@ private slots:
         QVERIFY(!error.isEmpty());
         QCOMPARE(back.tracks.size(), 1);   // what came before the damage
     }
+
+    // Tags are untrusted: a line break in one must not add an entry.
+    void lineBreaksInTagsStayInTheirLine()
+    {
+        QTemporaryDir dir;
+        Track t = Track::fromPath(QStringLiteral("/m/a.mp3"));
+        t.title = QStringLiteral("line1\n/etc/passwd\r\nhttp://evil.example/x");
+        Track odd = Track::fromPath(QStringLiteral("/m/new\nline.mp3"));
+        for (const char *ext : {"m3u8", "pls"}) {
+            const QString file = dir.filePath(QStringLiteral("p.") + QLatin1String(ext));
+            QVERIFY(PlaylistIO::save(file, {QStringLiteral("P\nQ"), {t, odd}}));
+            PlaylistData back;
+            QVERIFY(PlaylistIO::load(file, back));
+            QCOMPARE(back.tracks.size(), 1);
+            QCOMPARE(back.tracks[0].path, t.path);
+        }
+    }
+
+    // A Windows path that was not found stays one in the session file.
+    void unresolvedWindowsPathSurvivesXspf()
+    {
+        QTemporaryDir dir;
+        Track t;
+        t.path = QStringLiteral("D:/Music/a.mp3");
+        t.uid = Track::newUid();
+        const QString file = dir.filePath(QStringLiteral("s.xspf"));
+        QVERIFY(PlaylistIO::save(file, {QStringLiteral("S"), {t}}));
+        PlaylistData back;
+        QVERIFY(PlaylistIO::load(file, back));
+        QCOMPARE(back.tracks.size(), 1);
+        QVERIFY2(!back.tracks[0].path.startsWith(QLatin1String("/D:")), qPrintable(back.tracks[0].path));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestPlaylistIO)

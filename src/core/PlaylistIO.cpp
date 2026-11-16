@@ -130,11 +130,25 @@ QList<Entry> entriesForSave(const TrackList &tracks)
     return out;
 }
 
+// One line of a line-based format: tags are untrusted, and a line break in
+// one would add an entry of its own to the playlist.
+QString oneLine(QString s)
+{
+    s.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    s.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    return s;
+}
+
+bool hasLineBreak(const QString &s)
+{
+    return s.contains(QLatin1Char('\n')) || s.contains(QLatin1Char('\r'));
+}
+
 QString extinfTitle(const Track &t)
 {
     if (t.title.isEmpty())
-        return QFileInfo(t.path).completeBaseName();
-    return t.artist.isEmpty() ? t.title : t.artist + QStringLiteral(" - ") + t.title;
+        return oneLine(QFileInfo(t.path).completeBaseName());
+    return oneLine(t.artist.isEmpty() ? t.title : t.artist + QStringLiteral(" - ") + t.title);
 }
 
 bool writeFile(const QString &file, const QByteArray &bytes, QString *error)
@@ -158,13 +172,16 @@ QByteArray writeM3u(const PlaylistData &data)
 {
     QString s = QStringLiteral("#EXTM3U\n");
     if (!data.name.isEmpty())
-        s += QStringLiteral("#PLAYLIST:") + data.name + QLatin1Char('\n');
+        s += QStringLiteral("#PLAYLIST:") + oneLine(data.name) + QLatin1Char('\n');
     for (const Entry &e : entriesForSave(data.tracks)) {
         if (!e.track) {
-            s += e.cue + QLatin1Char('\n');
+            if (!hasLineBreak(e.cue))
+                s += e.cue + QLatin1Char('\n');
             continue;
         }
         const Track &t = *e.track;
+        if (hasLineBreak(t.path))
+            continue;   // cannot be written as a line (a file name with a line break)
         const qint64 secs = t.durationMs > 0 ? (t.durationMs + 500) / 1000 : -1;
         s += QStringLiteral("#EXTINF:%1,%2\n%3\n").arg(secs).arg(extinfTitle(t), t.path);
     }
@@ -177,6 +194,8 @@ QByteArray writePls(const PlaylistData &data)
     QString s = QStringLiteral("[playlist]\n");
     int n = 0;
     for (const Entry &e : entries) {
+        if (hasLineBreak(e.track ? e.track->path : e.cue))
+            continue;   // cannot be written as a line
         ++n;
         if (!e.track) {
             s += QStringLiteral("File%1=%2\n").arg(n).arg(e.cue);
@@ -194,7 +213,10 @@ QByteArray writePls(const PlaylistData &data)
 
 QString locationFor(const QString &path)
 {
-    if (path.contains(QLatin1String("://")))
+    // URLs, and paths that are not absolute Linux paths (Windows ones left by
+    // a playlist from AIMP that were not found), are kept as they are: as a
+    // file:// URL "D:/a.mp3" would come back as "/D:/a.mp3".
+    if (path.contains(QLatin1String("://")) || !path.startsWith(QLatin1Char('/')))
         return replaceLoneSurrogates(path);
     return QUrl::fromLocalFile(path).toString(QUrl::FullyEncoded);
 }
