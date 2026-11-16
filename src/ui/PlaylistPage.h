@@ -70,6 +70,8 @@ protected:
 private:
     void scheduleFit(bool contentChanged);
     void measure(int column = -1);
+    bool measureRows(int firstColumn, int lastColumn, int top, int bottom, int maxRows);
+    bool growNeeds(int top, int bottom);   // after rows changed: wider only
 
     PlaylistModel *m_model;
     PlaylistFilterProxy *m_proxy;

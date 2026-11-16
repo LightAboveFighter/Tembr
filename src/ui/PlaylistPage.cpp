@@ -195,7 +195,17 @@ PlaylistPage::PlaylistPage(const QString &name, QWidget *parent)
     for (auto sig : {&QAbstractItemModel::rowsInserted, &QAbstractItemModel::rowsRemoved})
         connect(m_model, sig, this, [this] { scheduleFit(true); });
     connect(m_model, &QAbstractItemModel::modelReset, this, [this] { scheduleFit(true); });
-    connect(m_model, &QAbstractItemModel::dataChanged, this, [this] { scheduleFit(true); });
+    // Changed rows (tags read, the current track) can only make columns
+    // wider: measured alone. A full measure (90 ms at 100k rows) after
+    // every batch of tags kept the window busy while scanning.
+    connect(m_model, &QAbstractItemModel::dataChanged, this, [this](const QModelIndex &tl, const QModelIndex &br) {
+        if (m_needsDirty || m_needs.size() != PlaylistModel::ColumnCount) {
+            scheduleFit(true);
+            return;
+        }
+        if (growNeeds(tl.row(), br.row()))
+            m_fitTimer.start();
+    });
     connect(header, &QHeaderView::sectionCountChanged, this, [this] {
         m_layoutWanted = true;
         scheduleFit(true);
@@ -375,13 +385,6 @@ void PlaylistPage::showEvent(QShowEvent *e)
 void PlaylistPage::measure(int column)
 {
     constexpr int kMaxRows = 4000;
-    const QFontMetrics fm(m_view->font());
-    QFont bold = m_view->font();
-    bold.setBold(true);
-    const QFontMetrics bm(bold);
-    // Style sheet padding (4 + 4) and the delegate's text margins (frame margin + 1 a side).
-    const int padding = 8 + 2 * (m_view->style()->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, m_view) + 1) + 2;
-    const int icon = m_view->style()->pixelMetric(QStyle::PM_SmallIconSize, nullptr, m_view) + 4;
     QHeaderView *header = m_view->horizontalHeader();
 
     if (m_needs.size() != PlaylistModel::ColumnCount)
@@ -393,9 +396,26 @@ void PlaylistPage::measure(int column)
     for (int col = first; col <= last; ++col)
         m_needs[col] = header->sectionSizeHint(col);
 
-    const int rows = m_model->rowCount();
-    const int step = qMax(1, rows / kMaxRows);
+    measureRows(first, last, 0, m_model->rowCount() - 1, kMaxRows);
+    if (column < 0)
+        m_needsDirty = false;
+}
+
+// Widens m_needs[first..last] to what rows top..bottom need (at most
+// `maxRows` of them, evenly spread, and always the current track). True if a
+// column got wider.
+bool PlaylistPage::measureRows(int first, int last, int top, int bottom, int maxRows)
+{
+    const QFontMetrics fm(m_view->font());
+    QFont bold = m_view->font();
+    bold.setBold(true);
+    const QFontMetrics bm(bold);
+    // Style sheet padding (4 + 4) and the delegate's text margins (frame margin + 1 a side).
+    const int padding = 8 + 2 * (m_view->style()->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, m_view) + 1) + 2;
+    const int icon = m_view->style()->pixelMetric(QStyle::PM_SmallIconSize, nullptr, m_view) + 4;
+    QHeaderView *header = m_view->horizontalHeader();
     const int current = m_model->currentRow();
+    bool wider = false;
     auto measureRow = [&](int row) {
         const QFontMetrics &m = row == current ? bm : fm;
         for (int col = first; col <= last; ++col) {
@@ -405,15 +425,24 @@ void PlaylistPage::measure(int column)
             int w = m.horizontalAdvance(text) + padding;
             if (col == PlaylistModel::ColTitle)
                 w += icon;   // play/pause mark of the current track
-            m_needs[col] = qMax(m_needs[col], w);
+            if (w > m_needs[col]) {
+                m_needs[col] = w;
+                wider = true;
+            }
         }
     };
-    for (int row = 0; row < rows; row += step)
+    const int rows = bottom - top + 1;
+    const int step = qMax(1, rows / maxRows);
+    for (int row = top; row <= bottom; row += step)
         measureRow(row);
-    if (current >= 0)
+    if (current >= top && current <= bottom)
         measureRow(current);
-    if (column < 0)
-        m_needsDirty = false;
+    return wider;
+}
+
+bool PlaylistPage::growNeeds(int top, int bottom)
+{
+    return measureRows(0, PlaylistModel::ColumnCount - 1, top, bottom, 1000);
 }
 
 void PlaylistPage::fitColumns()
