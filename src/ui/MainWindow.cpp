@@ -1111,6 +1111,14 @@ void MainWindow::showHeaderMenu(const QPoint &globalPos)
             }
         });
     }
+    menu.addSeparator();
+    menu.addAction(QStringLiteral("Ширина колонок по содержимому"), this, [this] {
+        PlaylistPage::resetColumnWidths();
+        for (int i = 0; i < m_tabs->count(); ++i) {
+            if (auto *p = qobject_cast<PlaylistPage *>(m_tabs->widget(i)))
+                p->fitColumns();
+        }
+    });
     menu.exec(globalPos);
 }
 

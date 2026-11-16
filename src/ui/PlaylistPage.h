@@ -2,7 +2,10 @@
 
 #include "core/TrackQuery.h"
 
+#include <QHash>
 #include <QTableView>
+#include <QTimer>
+#include <QVector>
 #include <QWidget>
 
 class PlaylistModel;
@@ -49,14 +52,33 @@ public:
     void setQuery(const QString &text, TrackQuery::Field field);
     void scrollToSourceRow(int row);
 
+    // Column widths from the content (see core/ColumnFit). A column the user
+    // drags keeps that width, in every tab, until resetColumnWidths().
+    void fitColumns();
+    static void resetColumnWidths();
+
 signals:
     void trackActivated(int sourceRow);
     void tracksAdded(int firstRow, bool playFirst);
     void statsChanged();
     void contextMenuRequested(const QPoint &globalPos);
 
+protected:
+    bool eventFilter(QObject *watched, QEvent *e) override;
+    void showEvent(QShowEvent *e) override;
+
 private:
+    void scheduleFit(bool contentChanged);
+    void measure(int column = -1);
+
     PlaylistModel *m_model;
     PlaylistFilterProxy *m_proxy;
     PlaylistView *m_view;
+    QTimer m_fitTimer;
+    QVector<int> m_needs;          // per column, from the content
+    bool m_needsDirty = true;
+    bool m_applying = false;       // our own resizing, not the user's
+    bool m_dragging = false;       // the mouse is down on the header
+    bool m_layoutWanted = false;   // a column shown or hidden, a tab shown, ...: lay out even after a drag
+    bool m_keepLayout = false;     // a column was dragged: content changes alone leave the others
 };
