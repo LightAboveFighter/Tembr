@@ -61,6 +61,8 @@ private:
     void createLocalPage();
     void applyLocalScan(const TrackList &tracks);
     void showLocalFilesSettings();
+    // column < 0: by folder, as found on disk (AIMP's grouping by %FileDir).
+    void setLocalSort(int column, Qt::SortOrder order);
     PlaylistPage *addPage(const QString &name);
     void closePage(int index);
     void renamePage(int index);
@@ -135,6 +137,11 @@ private:
     QAction *m_trayTitle = nullptr;
 
     QByteArray m_headerState;   // column layout shared by all tabs
+    int m_headerColumns = 0;    // columns m_headerState knows (newer ones start hidden)
+    // Order of Local files, kept across rescans and restarts.
+    int m_localSortColumn = -1;
+    Qt::SortOrder m_localSortOrder = Qt::AscendingOrder;
+    bool m_localResort = false;   // sorted by tags before all were read: sort again once they are
     QString m_coverPath;        // track whose cover is shown
     QImage m_coverImage;
     QString m_artFile;          // cover exported for MPRIS clients

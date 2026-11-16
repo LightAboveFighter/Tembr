@@ -234,6 +234,8 @@ QByteArray writeXspf(const PlaylistData &data)
         meta("samplerate", QString::number(t.sampleRate));
         meta("channels", QString::number(t.channels));
         meta("filesize", QString::number(t.fileSize));
+        meta("added", QString::number(t.addedMs));
+        meta("modified", QString::number(t.modifiedMs));
         meta("scanned", t.scanned ? QStringLiteral("1") : QString());
         w.writeEndElement();
     }
@@ -490,6 +492,8 @@ TrackList parseXspf(const QByteArray &xml, const EntryResolver &resolve, QString
                 else if (key == QLatin1String("samplerate")) cur.sampleRate = v.toInt();
                 else if (key == QLatin1String("channels")) cur.channels = v.toInt();
                 else if (key == QLatin1String("filesize")) cur.fileSize = v.toLongLong();
+                else if (key == QLatin1String("added")) cur.addedMs = v.toLongLong();
+                else if (key == QLatin1String("modified")) cur.modifiedMs = v.toLongLong();
                 else if (key == QLatin1String("scanned")) cur.scanned = (v == QLatin1String("1"));
             }
         } else if (r.isEndElement() && r.name() == QLatin1String("track")) {

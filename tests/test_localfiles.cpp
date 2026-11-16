@@ -1,4 +1,7 @@
 #include "core/LocalFiles.h"
+#include "core/TrackSort.h"
+
+#include <QDateTime>
 
 #include <QDir>
 #include <QFile>
@@ -175,6 +178,151 @@ private slots:
         QTRY_VERIFY(!scanning.isEmpty() && !scanning.last().at(0).toBool());
     }
 
+    // Dates: added = first seen (kept), modified = mtime; retagging that keeps
+    // the size is still noticed through the mtime.
+    void datesAddedAndModified()
+    {
+        QTemporaryDir music;
+        const QString a = music.filePath(QStringLiteral("a.mp3"));
+        writeFile(a, "aaaa");
+        const QDateTime old = QDateTime::fromString(QStringLiteral("2021-01-31T09:39:16Z"), Qt::ISODate);
+        {
+            QFile f(a);
+            QVERIFY(f.open(QIODevice::ReadWrite));
+            QVERIFY(f.setFileTime(old, QFileDevice::FileModificationTime));   // as copied with its mtime
+        }
+        LocalFilesSettings s;
+        s.folders = {music.path()};
+        TrackList known = LocalLibrary::scan(s, {});
+        QCOMPARE(known.size(), 1);
+        QCOMPARE(known[0].modifiedMs, old.toMSecsSinceEpoch());
+        // Added when it landed here, not when it was made.
+        QVERIFY(qAbs(known[0].addedMs - QDateTime::currentMSecsSinceEpoch()) < 60000);
+        known[0].scanned = true;
+        known[0].fileSize = 4;
+        known[0].addedMs = 1000;   // first seen long ago
+
+        TrackList again = LocalLibrary::scan(s, known);
+        QVERIFY(again[0].scanned);   // unchanged
+        QCOMPARE(again[0].addedMs, qint64(1000));
+
+        writeFile(a, "AAAA");   // new tags, same size
+        {
+            QFile f(a);
+            QVERIFY(f.open(QIODevice::ReadWrite));
+            QVERIFY(f.setFileTime(old.addSecs(60), QFileDevice::FileModificationTime));
+        }
+        again = LocalLibrary::scan(s, known);
+        QVERIFY(!again[0].scanned);                  // read again
+        QCOMPARE(again[0].uid, known[0].uid);
+        QCOMPARE(again[0].addedMs, qint64(1000));    // still added back then
+        QCOMPARE(again[0].modifiedMs, old.addSecs(60).toMSecsSinceEpoch());
+    }
+
+    // "Newest first" is a timeline down to the second (13:11, 13:10, 13:10,
+    // never 13:10 after 13:11); equal times keep album order.
+    void sortByDateAdded()
+    {
+        auto track = [](const QString &path, int no, qint64 addedSec) {
+            Track t = Track::fromPath(path);
+            t.album = QFileInfo(path).dir().dirName();
+            t.trackNo = no;
+            t.addedMs = addedSec * 1000;
+            t.modifiedMs = (1000 - addedSec) * 1000;
+            return t;
+        };
+        TrackList tracks = {
+            track(QStringLiteral("/m/Old/01.mp3"), 1, 600),
+            track(QStringLiteral("/m/Old/02.mp3"), 2, 600),        // same second as 01
+            track(QStringLiteral("/m/New/02.mp3"), 2, 3010),       // 0:50:10
+            track(QStringLiteral("/m/New/01.mp3"), 1, 3065),       // 0:51:05
+            track(QStringLiteral("/m/New/03.mp3"), 3, 2995),       // 0:49:55
+            track(QStringLiteral("/m/Old/bonus.mp3"), 9, 4200),
+        };
+        auto names = [](const TrackList &list) {
+            QStringList out;
+            for (const Track &t : list)
+                out << QFileInfo(t.path).dir().dirName() + QLatin1Char('/') + t.fileName();
+            return out;
+        };
+        TrackSort::sort(tracks, TrackSort::Key::Added, Qt::DescendingOrder);
+        QCOMPARE(names(tracks), (QStringList{"Old/bonus.mp3", "New/01.mp3", "New/02.mp3", "New/03.mp3",
+                                             "Old/01.mp3", "Old/02.mp3"}));
+        for (int i = 1; i < tracks.size(); ++i)
+            QVERIFY(tracks[i - 1].addedMs >= tracks[i].addedMs);
+        TrackSort::sort(tracks, TrackSort::Key::Added, Qt::AscendingOrder);
+        QCOMPARE(names(tracks), (QStringList{"Old/01.mp3", "Old/02.mp3", "New/03.mp3", "New/02.mp3",
+                                             "New/01.mp3", "Old/bonus.mp3"}));
+        TrackSort::sort(tracks, TrackSort::Key::Modified, Qt::DescendingOrder);
+        QCOMPARE(names(tracks).first(), QStringLiteral("Old/01.mp3"));
+        QCOMPARE(names(tracks).last(), QStringLiteral("Old/bonus.mp3"));
+    }
+
+    // Moving or renaming inside the library is not "adding": same date, tags kept.
+    void movedFileKeepsDateAndTags()
+    {
+        QTemporaryDir music;
+        writeFile(music.filePath(QStringLiteral("Inbox/song.mp3")), "same bytes");
+        writeFile(music.filePath(QStringLiteral("Inbox/other.mp3")), "other one!");   // same size, other mtime
+        {
+            QFile f(music.filePath(QStringLiteral("Inbox/other.mp3")));
+            QVERIFY(f.open(QIODevice::ReadWrite));
+            QVERIFY(f.setFileTime(QDateTime::currentDateTime().addDays(-3), QFileDevice::FileModificationTime));
+        }
+        LocalFilesSettings s;
+        s.folders = {music.path()};
+        TrackList known = LocalLibrary::scan(s, {});
+        QCOMPARE(known.size(), 2);
+        for (Track &t : known) {
+            t.scanned = true;
+            t.fileSize = QFileInfo(t.path).size();
+            t.title = QStringLiteral("tagged ") + t.fileName();
+            t.addedMs = 5000;   // long ago
+            t.missing = t.fileName() == QLatin1String("song.mp3");   // failed to play after it was moved
+        }
+        QDir().mkpath(music.filePath(QStringLiteral("Artist/Album")));
+        QVERIFY(QFile::rename(music.filePath(QStringLiteral("Inbox/song.mp3")),
+                              music.filePath(QStringLiteral("Artist/Album/01 Song.mp3"))));
+
+        const TrackList t = LocalLibrary::scan(s, known);
+        QCOMPARE(t.size(), 2);
+        const Track &moved = t[0].fileName() == QLatin1String("01 Song.mp3") ? t[0] : t[1];
+        QCOMPARE(moved.fileName(), QStringLiteral("01 Song.mp3"));
+        QCOMPARE(moved.addedMs, qint64(5000));
+        QCOMPARE(moved.title, QStringLiteral("tagged song.mp3"));   // not read again
+        QVERIFY(moved.scanned);
+        QVERIFY(!moved.missing);   // found at its new place
+
+        // A really new file is new, even with a size seen before.
+        writeFile(music.filePath(QStringLiteral("Inbox/new.mp3")), "same bytes");
+        const TrackList t2 = LocalLibrary::scan(s, t);
+        for (const Track &x : t2) {
+            if (x.fileName() == QLatin1String("new.mp3"))
+                QVERIFY(x.addedMs > 5000 && !x.scanned);
+        }
+    }
+
+    // A file renamed in place keeps its entry and its row (e.g. sorted by
+    // date added); the list must still take the new path.
+    void sameListNoticesRename()
+    {
+        QTemporaryDir music;
+        writeFile(music.filePath(QStringLiteral("a.mp3")), "aaaa");
+        writeFile(music.filePath(QStringLiteral("b.mp3")), "bbbb!");
+        LocalFilesSettings s;
+        s.folders = {music.path()};
+        TrackList shown = LocalLibrary::scan(s, {});
+        for (Track &t : shown) {
+            t.scanned = true;
+            t.fileSize = QFileInfo(t.path).size();
+        }
+        QVERIFY(LocalLibrary::sameList(shown, LocalLibrary::scan(s, shown)));
+        QVERIFY(QFile::rename(music.filePath(QStringLiteral("b.mp3")), music.filePath(QStringLiteral("c.mp3"))));
+        const TrackList after = LocalLibrary::scan(s, shown);
+        QCOMPARE(after[1].uid, shown[1].uid);   // same entry, same row
+        QVERIFY(!LocalLibrary::sameList(shown, after));
+    }
+
     void followsChangesOnDisk()
     {
         QTemporaryDir music;
@@ -197,8 +345,13 @@ private slots:
         QVERIFY(scanned.wait(5000));
         QCOMPARE(scanned.takeFirst().at(0).value<TrackList>().size(), 2);
 
-        lf.saveCache(LocalLibrary::scan(s, {}));
-        QCOMPARE(lf.loadCache().size(), 2);
+        const TrackList saved = LocalLibrary::scan(s, {});
+        lf.saveCache(saved);
+        const TrackList loaded = lf.loadCache();
+        QCOMPARE(loaded.size(), 2);
+        QCOMPARE(loaded[0].addedMs, saved[0].addedMs);   // dates survive restarts
+        QCOMPARE(loaded[0].modifiedMs, saved[0].modifiedMs);
+        QVERIFY(loaded[0].addedMs > 0);
     }
 };
 

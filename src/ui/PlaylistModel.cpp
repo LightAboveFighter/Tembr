@@ -5,13 +5,21 @@
 #include "ui/Theme.h"
 
 #include <QApplication>
-#include <QCollator>
+#include <QDateTime>
 #include <QFont>
 #include <QPalette>
 #include <QtConcurrent>
 
 #include <algorithm>
-#include <numeric>
+
+namespace {
+
+QString dateText(qint64 ms)
+{
+    return ms > 0 ? QDateTime::fromMSecsSinceEpoch(ms).toString(QStringLiteral("dd.MM.yyyy HH:mm")) : QString();
+}
+
+} // namespace
 
 PlaylistModel::PlaylistModel(QObject *parent)
     : QAbstractTableModel(parent)
@@ -59,6 +67,8 @@ QVariant PlaylistModel::data(const QModelIndex &index, int role) const
         case ColDuration: return formatDuration(t.durationMs);
         case ColFormat: return t.formatSummary();
         case ColPath: return t.path;
+        case ColAdded: return dateText(t.addedMs);
+        case ColModified: return dateText(t.modifiedMs);
         }
         break;
     case Qt::ToolTipRole:
@@ -106,69 +116,49 @@ QVariant PlaylistModel::headerData(int section, Qt::Orientation orientation, int
     case ColDuration: return QStringLiteral("Время");
     case ColFormat: return QStringLiteral("Формат");
     case ColPath: return QStringLiteral("Путь");
+    case ColAdded: return QStringLiteral("Добавлен");
+    case ColModified: return QStringLiteral("Изменён");
     }
     return {};
 }
 
+bool PlaylistModel::sortKey(int column, TrackSort::Key *key)
+{
+    using K = TrackSort::Key;
+    switch (column) {
+    case ColTitle: *key = K::Title; return true;
+    case ColArtist: *key = K::Artist; return true;
+    case ColAlbum: *key = K::Album; return true;
+    case ColTrackNo: *key = K::TrackNo; return true;
+    case ColYear: *key = K::Year; return true;
+    case ColGenre: *key = K::Genre; return true;
+    case ColDuration: *key = K::Duration; return true;
+    case ColFormat: *key = K::Format; return true;
+    case ColPath: *key = K::Path; return true;
+    case ColAdded: *key = K::Added; return true;
+    case ColModified: *key = K::Modified; return true;
+    }
+    return false;
+}
+
 void PlaylistModel::sort(int column, Qt::SortOrder order)
 {
-    if (column <= ColIndex || column >= ColumnCount || m_tracks.size() < 2)
+    TrackSort::Key key;
+    if (!sortKey(column, &key))
         return;
-
-    QCollator coll;
-    coll.setNumericMode(true);
-    coll.setCaseSensitivity(Qt::CaseInsensitive);
-    auto str = [&](const QString &a, const QString &b) { return coll.compare(a, b); };
-    auto num = [](qint64 a, qint64 b) { return a < b ? -1 : (a > b ? 1 : 0); };
-
-    auto primary = [&](const Track &a, const Track &b) -> int {
-        switch (column) {
-        case ColTitle: return str(a.title.isEmpty() ? a.fileName() : a.title, b.title.isEmpty() ? b.fileName() : b.title);
-        case ColArtist: return str(a.artist, b.artist);
-        case ColAlbum: return str(a.album, b.album);
-        case ColTrackNo: return num(qint64(a.discNo) * 10000 + a.trackNo, qint64(b.discNo) * 10000 + b.trackNo);
-        case ColYear: return str(a.year, b.year);
-        case ColGenre: return str(a.genre, b.genre);
-        case ColDuration: return num(a.durationMs, b.durationMs);
-        case ColFormat: {
-            const int c = str(a.codec, b.codec);
-            return c != 0 ? c : num(a.bitrateKbps, b.bitrateKbps);
-        }
-        case ColPath: return str(a.path, b.path);
-        }
-        return 0;
-    };
-    // Ties keep albums together and in track order.
-    auto tieBreak = [&](const Track &a, const Track &b) -> int {
-        if (int c = str(a.albumArtist.isEmpty() ? a.artist : a.albumArtist,
-                        b.albumArtist.isEmpty() ? b.artist : b.albumArtist))
-            return c;
-        if (int c = str(a.album, b.album))
-            return c;
-        if (int c = num(qint64(a.discNo) * 10000 + a.trackNo, qint64(b.discNo) * 10000 + b.trackNo))
-            return c;
-        if (int c = str(a.path, b.path))
-            return c;
-        return num(a.startMs, b.startMs);
-    };
-
-    QVector<int> perm(m_tracks.size());
-    std::iota(perm.begin(), perm.end(), 0);
-    std::stable_sort(perm.begin(), perm.end(), [&](int ia, int ib) {
-        const Track &a = m_tracks.at(ia);
-        const Track &b = m_tracks.at(ib);
-        if (int c = primary(a, b))
-            return order == Qt::AscendingOrder ? c < 0 : c > 0;
-        return tieBreak(a, b) < 0;
-    });
+    if (m_tracks.size() < 2) {
+        emit sorted(column, order);   // nothing to move, but the choice counts (Local files remember it)
+        return;
+    }
+    const QVector<int> perm = TrackSort::permutation(m_tracks, key, order);
 
     emit layoutAboutToBeChanged({}, QAbstractItemModel::VerticalSortHint);
     QVector<int> newRow(perm.size());
-    TrackList sorted;
-    sorted.reserve(m_tracks.size());
+    TrackList reordered;
+    reordered.reserve(m_tracks.size());
     for (int i = 0; i < perm.size(); ++i) {
         newRow[perm[i]] = i;
-        sorted.append(m_tracks.at(perm[i]));
+        reordered.append(m_tracks.at(perm[i]));
     }
     const QModelIndexList from = persistentIndexList();
     QModelIndexList to;
@@ -176,9 +166,10 @@ void PlaylistModel::sort(int column, Qt::SortOrder order)
     for (const QModelIndex &idx : from)
         to.append(index(newRow[idx.row()], idx.column()));
     changePersistentIndexList(from, to);
-    m_tracks = std::move(sorted);
+    m_tracks = std::move(reordered);
     rebuildIndex();
     emit layoutChanged({}, QAbstractItemModel::VerticalSortHint);
+    emit sorted(column, order);
 }
 
 void PlaylistModel::setTracks(const TrackList &tracks)

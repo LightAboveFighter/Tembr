@@ -37,6 +37,8 @@ add_library(tembr_core STATIC
     src/core/FileTrash.h src/core/FileTrash.cpp
     src/core/TrackQuery.h src/core/TrackQuery.cpp
     src/core/MediaOpen.h src/core/MediaOpen.cpp
+    src/core/TrackSort.h src/core/TrackSort.cpp
+    src/core/FileTimes.h src/core/FileTimes.cpp
     src/audio/AudioEngine.h src/audio/AudioEngine.cpp
     src/platform/Mpris.h src/platform/Mpris.cpp
     src/platform/GlobalHotkeys.h src/platform/GlobalHotkeys.cpp

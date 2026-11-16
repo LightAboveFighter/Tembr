@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Track.h"
+#include "core/TrackSort.h"
 
 #include <QAbstractTableModel>
 #include <QFutureWatcher>
@@ -25,6 +26,8 @@ public:
         ColDuration,
         ColFormat,
         ColPath,
+        ColAdded,      // date the file appeared on this device
+        ColModified,   // file modification date
         ColumnCount
     };
 
@@ -45,6 +48,8 @@ public:
     QVariant data(const QModelIndex &index, int role) const override;
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
     void sort(int column, Qt::SortOrder order) override;
+    // Sort key of a column; false for the "#" column.
+    static bool sortKey(int column, TrackSort::Key *key);
 
     const TrackList &tracks() const { return m_tracks; }
     const Track &track(int row) const { return m_tracks.at(row); }
@@ -84,6 +89,7 @@ public:
 signals:
     void contentsChanged();   // tracks added/removed/updated: refresh totals
     void currentDetached();   // the current track's row went away (see currentTrack())
+    void sorted(int column, Qt::SortOrder order);
 
 private:
     void startScan(const TrackList &tracks);

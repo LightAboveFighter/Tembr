@@ -37,13 +37,17 @@ namespace LocalLibrary {
 
 // The tracks under the folders, grouped by folder in natural order (as AIMP
 // groups Local files by %FileDir). Tracks of `known` whose file is unchanged
-// (same size), or whose tags are not read yet, are reused as they are; a
-// changed file keeps its uid but comes back unscanned with its new size; the
-// rest are new and unscanned. `dirs` receives the folders walked. Blocking.
+// (same size and mtime), or whose tags are not read yet, are reused as they
+// are; a changed file keeps its uid but comes back unscanned with its new
+// size; the rest are new and unscanned. Every track gets its file dates; a
+// known track keeps the date it was added, also when its file was moved or
+// renamed inside the folders (recognised by the same size and mtime).
+// `dirs` receives the folders walked. Blocking.
 TrackList scan(const LocalFilesSettings &settings, const TrackList &known, QStringList *dirs = nullptr);
 
 // Whether a scan result brings nothing new for the list shown: the same
-// entries in the same order and no file changed.
+// entries at the same paths (a moved file keeps its entry) with the same
+// dates, in the same order, and no file changed.
 bool sameList(const TrackList &shown, const TrackList &scanned);
 
 } // namespace LocalLibrary
