@@ -237,6 +237,8 @@ void MprisService::setTrack(const Track *t, const QString &artPath)
         if (!artPath.isEmpty())
             m.insert(QStringLiteral("mpris:artUrl"), QUrl::fromLocalFile(artPath).toString(QUrl::FullyEncoded));
     }
+    if (m == m_metadata)
+        return;   // refreshed with nothing new (tags of other tracks arrived)
     m_metadata = m;
     notify(QStringLiteral("org.mpris.MediaPlayer2.Player"),
            {{QStringLiteral("Metadata"), m_metadata},

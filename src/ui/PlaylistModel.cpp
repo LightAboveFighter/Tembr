@@ -11,6 +11,7 @@
 #include <QtConcurrent>
 
 #include <algorithm>
+#include <climits>
 
 namespace {
 
@@ -24,6 +25,9 @@ QString dateText(qint64 ms)
 PlaylistModel::PlaylistModel(QObject *parent)
     : QAbstractTableModel(parent)
 {
+    m_applyTimer.setSingleShot(true);
+    m_applyTimer.setInterval(150);
+    connect(&m_applyTimer, &QTimer::timeout, this, [this] { applyScanned(); });
 }
 
 // Tag reads still running work on copies of the tracks and are not waited
@@ -396,9 +400,14 @@ void PlaylistModel::startScan(const TrackList &tracks)
     auto *watcher = new QFutureWatcher<Track>(this);
     connect(watcher, &QFutureWatcher<Track>::resultsReadyAt, this, [this, watcher](int begin, int end) {
         for (int i = begin; i < end; ++i)
-            applyScanned(watcher->resultAt(i));
+            m_scanned.append(watcher->resultAt(i));
+        if (m_scanned.size() >= 2000)
+            applyScanned();
+        else if (!m_applyTimer.isActive())
+            m_applyTimer.start();
     });
     connect(watcher, &QFutureWatcher<Track>::finished, this, [this, watcher] {
+        applyScanned();
         m_watchers.removeOne(watcher);
         watcher->deleteLater();
         emit contentsChanged();
@@ -407,15 +416,26 @@ void PlaylistModel::startScan(const TrackList &tracks)
     watcher->setFuture(QtConcurrent::mapped(tracks, &MetadataReader::read));
 }
 
-void PlaylistModel::applyScanned(const Track &t)
+// Tags arrive track by track; they are applied in batches with one
+// dataChanged for the rows they touch. One signal per track made the filter,
+// the totals and the column widths react to each.
+void PlaylistModel::applyScanned()
 {
-    const int row = rowOfUid(t.uid);
-    if (row < 0)
-        return;   // removed while being scanned
-    if (m_tracks.at(row).path != t.path)
-        return;   // pointed elsewhere meanwhile ("find moved files"): not this file's tags
-    m_tracks[row] = t;
-    emitRowChanged(row);
+    m_applyTimer.stop();
+    int first = INT_MAX, last = -1;
+    for (const Track &t : std::as_const(m_scanned)) {
+        const int row = rowOfUid(t.uid);
+        if (row < 0)
+            continue;   // removed while being scanned
+        if (m_tracks.at(row).path != t.path)
+            continue;   // pointed elsewhere meanwhile ("find moved files"): not this file's tags
+        m_tracks[row] = t;
+        first = std::min(first, row);
+        last = std::max(last, row);
+    }
+    m_scanned.clear();
+    if (last >= 0)
+        emit dataChanged(index(first, 0), index(last, ColumnCount - 1));
 }
 
 void PlaylistModel::rebuildIndex()
