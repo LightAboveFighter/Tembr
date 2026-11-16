@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QSet>
+#include <QUrl>
 
 #include <algorithm>
 
@@ -97,8 +98,10 @@ TrackList collect(const QStringList &paths, const QStringList &excludedIn, QStri
         excluded << QDir::cleanPath(QFileInfo(e).absoluteFilePath());
     TrackList out;
     QSet<QString> visited;
-    for (const QString &p : paths) {
-        if (p.contains(QLatin1String("://")) && !p.startsWith(QLatin1String("file:"))) {
+    for (QString p : paths) {
+        if (const QUrl url(p); p.startsWith(QLatin1String("file:"), Qt::CaseInsensitive) && url.isLocalFile())
+            p = url.toLocalFile();   // "Open with" from a file manager passes file:// URLs
+        if (p.contains(QLatin1String("://"))) {
             out.append(Track::fromPath(p));   // stream URL
             continue;
         }

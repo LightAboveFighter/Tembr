@@ -1,3 +1,4 @@
+#include "core/MediaCollector.h"
 #include "core/PathResolver.h"
 #include "core/PlaylistIO.h"
 #include "core/Relocator.h"
@@ -8,6 +9,7 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QUrl>
 
 class TestPlaylistIO : public QObject
 {
@@ -458,6 +460,26 @@ private slots:
         QVERIFY(PlaylistIO::load(file, back));
         QCOMPARE(back.tracks.size(), 1);
         QVERIFY2(!back.tracks[0].path.startsWith(QLatin1String("/D:")), qPrintable(back.tracks[0].path));
+    }
+
+    // "Open with Tembr" (Exec=tembr %U) passes file:// URLs.
+    void collectTakesFileUrls()
+    {
+        QTemporaryDir dir;
+        QDir().mkpath(dir.filePath(QStringLiteral("Альбом 1")));
+        const QString file = dir.filePath(QStringLiteral("Альбом 1/песня #1.mp3"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.close();
+        for (const QString &arg : {QUrl::fromLocalFile(file).toString(QUrl::FullyEncoded),
+                                   QUrl::fromLocalFile(dir.filePath(QStringLiteral("Альбом 1"))).toString()}) {
+            const TrackList t = MediaCollector::collect({arg});
+            QCOMPARE(t.size(), 1);
+            QCOMPARE(t[0].path, file);
+            QVERIFY(!t[0].isUrl());
+        }
+        QCOMPARE(MediaCollector::collect({QStringLiteral("https://radio.example/live")}).value(0).path,
+                 QStringLiteral("https://radio.example/live"));
     }
 };
 

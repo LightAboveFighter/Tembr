@@ -12,6 +12,7 @@
 #include <QLibraryInfo>
 #include <QLocale>
 #include <QTranslator>
+#include <QUrl>
 
 #include <cstdio>
 #include <cstring>
@@ -82,7 +83,11 @@ int main(int argc, char *argv[])
 
     QStringList paths;
     for (const QString &arg : app.arguments().mid(1)) {
-        if (!arg.startsWith(QLatin1Char('-')))
+        if (arg.startsWith(QLatin1Char('-')))
+            continue;
+        if (const QUrl url(arg); arg.startsWith(QLatin1String("file:"), Qt::CaseInsensitive) && url.isLocalFile())
+            paths << url.toLocalFile();   // Exec=tembr %U
+        else
             paths << (arg.contains(QLatin1String("://")) ? arg : QFileInfo(arg).absoluteFilePath());
     }
 
