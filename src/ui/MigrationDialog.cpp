@@ -470,6 +470,7 @@ void MigrationDialog::startImport()
         }
         int total = 0, found = 0;
         Migration::PhoneImportStats phoneStats;
+        Migration::PhoneCopyClaims claims;   // one copy folder for all the playlists
         QStringList errors;
         for (int i = 0; i < chosen.size() && !cancel->load(); ++i) {
             const Item &it = chosen[i];
@@ -494,6 +495,7 @@ void MigrationDialog::startImport()
                 Migration::PhoneImportOptions opt;
                 opt.library = index.files > 0 ? &index : nullptr;
                 opt.copyMissingTo = copyTo;
+                opt.claims = &claims;
                 const QString label = QStringLiteral("%1 из %2: %3").arg(i + 1).arg(chosen.size()).arg(it.name);
                 const auto progress = [&](int done, int count, const QString &current) {
                     if (done % 10 == 0 || done == count)

@@ -253,6 +253,8 @@ int runAndroid(const Args &a)
     const QList<AimpProfile> profiles = findAimpProfiles();
     const Relocator::Index library = buildLibrary(a, profiles.isEmpty() ? AimpProfile() : profiles.first());
     PhoneImportOptions options;
+    PhoneCopyClaims claims;   // one copy folder for all the playlists
+    options.claims = &claims;
     if (library.files > 0)
         options.library = &library;
     if (a.has("copy-to") && a.has("out"))

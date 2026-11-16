@@ -51,13 +51,169 @@ bool mapAbsolute(const QString &path, const QList<PhoneStorage> &storages, Phone
     return false;
 }
 
-// The phone's folder layout is kept, minus the top "Music/": copying into
-// ~/Music should not give ~/Music/Music/...
-QString copyTarget(const QString &rel)
+// Where a phone file may go below the copy folder, best first. The phone's
+// folder layout is kept, minus the top "Music/" (copying into ~/Music should
+// not give ~/Music/Music/...); that may meet a file from the storage root, so
+// next the path with "Music/", then numbered names: "x (2).mp3".
+class CopyTargets
 {
-    if (rel.startsWith(QLatin1String("Music/"), Qt::CaseInsensitive))
-        return rel.mid(6);
-    return rel;
+public:
+    explicit CopyTargets(const QString &rel)
+    {
+        const bool music = rel.startsWith(QLatin1String("Music/"), Qt::CaseInsensitive);
+        m_first = music ? rel.mid(6) : rel;
+        if (music)
+            m_second = rel;
+    }
+
+    // Empty when there are no more.
+    QString next()
+    {
+        ++m_n;
+        if (m_n == 1)
+            return m_first;
+        if (m_n == 2 && !m_second.isEmpty())
+            return m_second;
+        const int number = m_second.isEmpty() ? m_n : m_n - 1;
+        if (number > 999)
+            return {};
+        const int slash = int(m_first.lastIndexOf(QLatin1Char('/')));
+        const QString dir = m_first.left(slash + 1);
+        const QString file = m_first.mid(slash + 1);
+        const int dot = int(file.lastIndexOf(QLatin1Char('.')));
+        if (dot <= 0)
+            return dir + file + QStringLiteral(" (%1)").arg(number);
+        return dir + file.left(dot) + QStringLiteral(" (%1)").arg(number) + file.mid(dot);
+    }
+
+private:
+    QString m_first, m_second;
+    int m_n = 0;
+};
+
+QString claimKey(const QString &localPath)
+{
+    // Lower case: on a FAT or NTFS drive x.mp3 and X.mp3 are one file.
+    return localPath.toLower();
+}
+
+QString sourceKey(int storage, const QString &rel)
+{
+    return QString::number(storage) + QLatin1Char(':') + rel;
+}
+
+
+// Copies the file of `ref` below `folder` (or finds it copied before) and
+// returns the local path; empty if it could not be.
+QString copyFromPhone(PhoneSource &source, const PhoneRef &ref, const QString &folderIn, PhoneCopyClaims &claims,
+                      PhoneImportStats &stats)
+{
+    const QString folder = QDir::cleanPath(folderIn);
+    const QString prefix = folder.endsWith(QLatin1Char('/')) ? folder : folder + QLatin1Char('/');
+    if (ref.rel.isEmpty()) {
+        stats.errors << QStringLiteral("%1: недопустимый путь, не копирую").arg(ref.raw);
+        return {};
+    }
+    const bool adb = source.kind() == PhoneSource::Kind::Adb;
+    const int storageCount = int(source.storages().size());
+
+    // The expected storage first, then the others: which MTP storage is
+    // "/storage/emulated/0" is a guess, and SD cards have no id over MTP.
+    QList<int> candidates;
+    if (ref.storage >= 0)
+        candidates << ref.storage;
+    if (ref.storage < 0 || !adb) {
+        for (int s = 0; s < storageCount; ++s) {
+            if (s != ref.storage)
+                candidates << s;
+        }
+    }
+
+    // Which storage holds the file and its size: looked up when needed.
+    // Over ADB every question is a process started, so it is asked only when
+    // a file is already in the way; a plain copy needs no question there.
+    int foundStorage = -1;
+    qint64 foundSize = -1;
+    bool looked = false;
+    const auto lookUp = [&] {
+        if (looked)
+            return foundStorage >= 0;
+        looked = true;
+        for (int s : std::as_const(candidates)) {
+            const qint64 size = source.fileSize(s, ref.rel);
+            if (size >= 0) {
+                foundStorage = s;
+                foundSize = size;
+                break;
+            }
+        }
+        return foundStorage >= 0;
+    };
+    if (!adb && !lookUp())
+        return {};   // not on the phone
+    // Over ADB with a known storage the source is known without asking.
+    const auto knownKey = [&]() -> QString {
+        if (foundStorage >= 0)
+            return sourceKey(foundStorage, ref.rel);
+        if (adb && ref.storage >= 0)
+            return sourceKey(ref.storage, ref.rel);
+        return lookUp() ? sourceKey(foundStorage, ref.rel) : QString();
+    };
+
+    CopyTargets targets(ref.rel);
+    for (QString target = targets.next(); !target.isEmpty(); target = targets.next()) {
+        const QString dest = QDir::cleanPath(QDir(folder).filePath(target));
+        if (!dest.startsWith(prefix)) {
+            stats.errors << QStringLiteral("%1: недопустимый путь, не копирую").arg(ref.raw);
+            return {};
+        }
+        const auto claim = claims.constFind(claimKey(dest));
+        if (claim != claims.cend()) {
+            if (*claim == knownKey()) {
+                ++stats.copied;   // copied for an earlier entry of this import
+                return dest;
+            }
+            continue;   // another phone file is there
+        }
+        const QFileInfo existing(dest);
+        if (existing.exists()) {
+            // Copied by an earlier import, or someone else's file: the size tells.
+            if (existing.isFile() && lookUp() && existing.size() == foundSize) {
+                claims.insert(claimKey(dest), sourceKey(foundStorage, ref.rel));
+                ++stats.copied;
+                return dest;
+            }
+            if (adb && looked && foundStorage < 0)
+                return {};   // not on the phone
+            continue;
+        }
+
+        // Into "<name>.part", renamed when complete: a copy cut short (adb
+        // timed out, the cable came out) is never taken later for one
+        // "copied before".
+        const QString part = dest + QStringLiteral(".part");
+        QString copyError;
+        const QList<int> from = foundStorage >= 0 ? QList<int>{foundStorage} : candidates;
+        for (int s : from) {
+            QFile::remove(part);   // left by an earlier attempt
+            if (!source.copyTo(s, ref.rel, part, &copyError))
+                continue;
+            const qint64 size = QFileInfo(part).size();
+            if (size <= 0 || (foundStorage >= 0 && size != foundSize))
+                continue;
+            if (!QFile::rename(part, dest))
+                continue;
+            claims.insert(claimKey(dest), sourceKey(s, ref.rel));
+            ++stats.copied;
+            return dest;
+        }
+        QFile::remove(part);
+        if (!copyError.isEmpty())
+            stats.errors << QStringLiteral("%1: %2").arg(ref.rel, copyError);
+        return {};
+    }
+    stats.errors << QStringLiteral("%1: нет свободного имени для копии").arg(ref.rel);
+    return {};
 }
 
 } // namespace
@@ -141,6 +297,8 @@ bool importPhonePlaylist(PhoneSource &source, const PhonePlaylistFile &file, con
     out.name = name.isEmpty() ? QFileInfo(file.path).completeBaseName() : name;
     out.tracks.clear();
 
+    PhoneCopyClaims ownClaims;
+    PhoneCopyClaims *claims = options.claims ? options.claims : &ownClaims;
     PhoneImportStats local;
     for (int i = 0; i < tracks.size(); ++i) {
         Track t = tracks[i];
@@ -176,48 +334,8 @@ bool importPhonePlaylist(PhoneSource &source, const PhonePlaylistFile &file, con
                 ++local.matched;
         }
         // 2) Copy it from the phone.
-        if (localPath.isEmpty() && !options.copyMissingTo.isEmpty()) {
-            const QString dest = QDir::cleanPath(QDir(options.copyMissingTo).filePath(copyTarget(ref.rel)));
-            const QString folder = QDir::cleanPath(options.copyMissingTo);
-            if (ref.rel.isEmpty() || !dest.startsWith(folder.endsWith(QLatin1Char('/')) ? folder : folder + QLatin1Char('/'))) {
-                local.errors << QStringLiteral("%1: недопустимый путь, не копирую").arg(ref.raw);
-            } else if (QFileInfo(dest).size() > 0) {
-                localPath = dest;   // copied before (same file in another playlist)
-                ++local.copied;
-            } else {
-                // The expected storage first, then the others: which MTP storage is
-                // "/storage/emulated/0" is a guess, and SD cards have no id over MTP.
-                QList<int> candidates;
-                if (ref.storage >= 0)
-                    candidates << ref.storage;
-                if (ref.storage < 0 || source.kind() != PhoneSource::Kind::Adb) {
-                    for (int s = 0; s < storages.size(); ++s) {
-                        if (s != ref.storage)
-                            candidates << s;
-                    }
-                }
-                // Into "<name>.part", renamed when complete: a copy cut short
-                // (adb timed out, the cable came out) is never taken later for
-                // one "copied before".
-                const QString part = dest + QStringLiteral(".part");
-                QString copyError;
-                for (int s : std::as_const(candidates)) {
-                    if (source.kind() != PhoneSource::Kind::Adb && !source.exists(s, ref.rel))
-                        continue;
-                    QFile::remove(part);   // left by an earlier attempt
-                    if (source.copyTo(s, ref.rel, part, &copyError) && QFileInfo(part).size() > 0
-                        && QFile::rename(part, dest)) {
-                        localPath = dest;
-                        ++local.copied;
-                        break;
-                    }
-                }
-                QFile::remove(part);
-                if (localPath.isEmpty() && !copyError.isEmpty())
-                    local.errors << QStringLiteral("%1: %2").arg(ref.rel, copyError);
-            }
-        }
-
+        if (localPath.isEmpty() && !options.copyMissingTo.isEmpty())
+            localPath = copyFromPhone(source, ref, options.copyMissingTo, *claims, local);
         if (localPath.isEmpty()) {
             t.path = source.phonePath(ref.storage, ref.rel);
             t.missing = true;

@@ -41,7 +41,8 @@ public:
     // skipped (players and browsers cache HLS .m3u8 there), except AIMP's own.
     virtual QList<PhonePlaylistFile> findPlaylists(QString *error = nullptr) = 0;
     virtual QByteArray readFile(int storage, const QString &rel, QString *error = nullptr) = 0;
-    virtual bool exists(int storage, const QString &rel) = 0;
+    // Size of a file on the phone in bytes, -1 if there is no such file.
+    virtual qint64 fileSize(int storage, const QString &rel) = 0;
     virtual bool copyTo(int storage, const QString &rel, const QString &localPath, QString *error = nullptr) = 0;
 
     // "/sdcard/Music/a.mp3": how the path looks on the phone.
