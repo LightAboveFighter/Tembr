@@ -166,6 +166,29 @@ private slots:
         QCOMPARE(e.state(), AudioEngine::State::Stopped);
     }
 
+    // Whether the user still wanted it to play when the open failed: a
+    // player goes on to the next track only then.
+    void failureSaysWhetherItWasWanted()
+    {
+        AudioEngine e;
+        QSignalSpy failed(&e, &AudioEngine::loadFailed);
+        const QString nope = m_dir.filePath(QStringLiteral("nope.wav"));
+        e.load(nope);
+        e.play();
+        QVERIFY(failed.wait(2000));
+        QCOMPARE(failed.takeFirst().at(1).toBool(), true);
+
+        e.load(nope);
+        e.play();
+        e.stop();   // given up on while it was opening
+        QVERIFY(failed.wait(2000));
+        QCOMPARE(failed.takeFirst().at(1).toBool(), false);
+
+        e.load(nope);   // loaded without playing
+        QVERIFY(failed.wait(2000));
+        QCOMPARE(failed.takeFirst().at(1).toBool(), false);
+    }
+
     void disallowedSchemeFails()
     {
         AudioEngine e;

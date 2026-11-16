@@ -2,6 +2,7 @@
 
 #include "core/MediaOpen.h"
 
+#include <QElapsedTimer>
 #include <QTimer>
 
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -237,6 +239,8 @@ struct Session
     std::atomic<bool> readFailed{false};  // the input broke off (network, disk)
     std::atomic<qint64> playFrame{0};     // absolute index of the next frame to be heard
     std::atomic<qint64> seekRequest{-1};  // absolute frame, consumed by the decoder thread
+    std::atomic<qint64> initialSeekMs{-1}; // asked for while opening: applied before Ready
+    qint64 appliedSeekMs = -1;            // the one applied (published with `status`)
 
     // The decoder thread's own.
     Decoder dec;
@@ -287,8 +291,15 @@ struct Session
         }
         dropUntil = startFrame;
         playFrame = startFrame;
-        if (startFrame > 0 && seekable)
+        // A seek asked for while opening goes in before the first audio is
+        // decoded: the device must not start with a bit of the track start.
+        const qint64 ms = initialSeekMs.exchange(-1);
+        if (ms > 0 && seekable) {
+            appliedSeekMs = std::min(ms, durationMs);
+            doSeek(startFrame + appliedSeekMs * rate / 1000);
+        } else if (startFrame > 0 && seekable) {
             doSeek(startFrame);           // CUE track: skip to its start
+        }
         status.store(Ready, std::memory_order_release);
         decodeLoop();
     }
@@ -444,6 +455,34 @@ struct ThreadCount
     int running = 0;
 };
 
+// Each open stuck in a read the kernel does not interrupt (a hung network
+// mount) keeps its thread. Past this many, a new one waits for a free slot.
+constexpr int kMaxThreads = 16;
+
+enum class ThreadStart { Started, Busy, Failed };
+
+ThreadStart startThread(std::shared_ptr<Session> s, std::shared_ptr<ThreadCount> threads)
+{
+    std::lock_guard<std::mutex> lock(threads->mutex);
+    if (threads->running >= kMaxThreads)
+        return ThreadStart::Busy;
+    try {
+        std::thread([s, threads]() mutable {
+            s->run();
+            s.reset();                    // closes the file if the GUI has let go: counted as running
+            std::lock_guard<std::mutex> lock(threads->mutex);
+            --threads->running;
+            threads->done.notify_all();
+        }).detach();
+    } catch (const std::system_error &) {
+        s->error = QStringLiteral("Не удалось запустить поток декодера");
+        s->status.store(Session::Failed, std::memory_order_release);   // reported by checkOpened()
+        return ThreadStart::Failed;
+    }
+    ++threads->running;                   // under the lock: the thread decrements after this
+    return ThreadStart::Started;
+}
+
 } // namespace
 
 struct AudioEngine::Impl
@@ -456,38 +495,42 @@ struct AudioEngine::Impl
     std::atomic<float> gain{1.0f};
 
     // The session the audio thread plays. Changed only while the device is
-    // stopped, so the audio thread never sees one go away.
+    // stopped; and since miniaudio's stop can return early after a backend
+    // error, unload() also waits until the callback is out (`inCallback`).
     std::atomic<Session *> current{nullptr};
+    std::atomic<bool> inCallback{false};
 
     // GUI thread only.
     std::shared_ptr<Session> session;     // null: nothing loaded
     std::shared_ptr<ThreadCount> threads = std::make_shared<ThreadCount>();
     bool opened = false;                  // `session` is Ready and the GUI has taken it in
-    qint64 pendingSeekMs = -1;            // asked for while opening
+    qint64 pendingSeekMs = -1;            // asked for while opening (shown as the position)
     bool atEnd = false;                   // finished playing, play() restarts
     QTimer timer;
+    QElapsedTimer openClock;
+    bool threadStarted = false;           // false: `session` waits for a free thread slot
 
     static void dataCallback(ma_device *device, void *output, const void *, ma_uint32 frameCount)
     {
         auto *self = static_cast<Impl *>(device->pUserData);
         auto *out = static_cast<float *>(output);
-        Session *s = self->current.load(std::memory_order_acquire);
+        self->inCallback.store(true);     // seq_cst with the store of `current` in unload()
+        Session *s = self->current.load();
         size_t got = 0;
-        bool end = false;
         if (s) {
+            // Under the lock, so that a seek (which clears the ring) never
+            // falls between reading and counting what was read.
             std::lock_guard<std::mutex> lock(s->mutex);
             got = s->ring.read(out, frameCount);
-            end = got < frameCount && s->decoderEof;
+            s->playFrame.fetch_add(qint64(got), std::memory_order_relaxed);
+            if (got < frameCount && s->decoderEof)
+                s->reachedEnd.store(true);
         }
+        self->inCallback.store(false);
         const float g = self->gain.load(std::memory_order_relaxed);
         for (size_t i = 0; i < got * kChannels; ++i)
             out[i] *= g;
         std::fill(out + got * kChannels, out + size_t(frameCount) * kChannels, 0.0f);
-        if (s) {
-            s->playFrame.fetch_add(qint64(got), std::memory_order_relaxed);
-            if (end)
-                s->reachedEnd.store(true);
-        }
     }
 
     qint64 msToFrame(qint64 ms) const { return ms * rate / 1000; }
@@ -559,24 +602,16 @@ void AudioEngine::load(const QString &path, qint64 startMs, qint64 endMs)
     s->startFrame = d->msToFrame(startMs);
     s->endFrame = endMs > 0 ? d->msToFrame(endMs) : 0;
 
-    std::shared_ptr<ThreadCount> threads = d->threads;
-    {
-        std::lock_guard<std::mutex> lock(threads->mutex);
-        ++threads->running;
-    }
-    std::thread([s, threads]() mutable {
-        s->run();
-        s.reset();                        // closes the file if the GUI has let go: counted as running
-        std::lock_guard<std::mutex> lock(threads->mutex);
-        --threads->running;
-        threads->done.notify_all();
-    }).detach();
+    d->threadStarted = startThread(s, d->threads) == ThreadStart::Started;
+    if (!d->threadStarted && s->status.load() == Session::Opening)
+        d->timer.setInterval(50);         // waits for a free slot: see checkOpened()
 
     d->session = std::move(s);
     d->current.store(d->session.get(), std::memory_order_release);   // the device is stopped: see unload()
     d->opened = false;
     d->pendingSeekMs = -1;
     d->atEnd = false;
+    d->openClock.start();
     d->timer.setInterval(5);              // take in the result of the open quickly
 
     emit durationChanged(0);
@@ -597,8 +632,10 @@ void AudioEngine::haltDevice()
 
 void AudioEngine::unload()
 {
-    haltDevice();                         // the audio thread is done with `current`
-    d->current.store(nullptr, std::memory_order_release);
+    haltDevice();
+    d->current.store(nullptr);
+    while (d->inCallback.load())          // only after a backend error: see `current`
+        std::this_thread::yield();
     if (d->session) {
         d->session->requestQuit();        // also interrupts an open or read in progress
         d->session.reset();               // its thread lets go of it when it ends
@@ -666,6 +703,7 @@ void AudioEngine::seek(qint64 ms)
         return;
     if (!d->opened) {
         d->pendingSeekMs = std::max<qint64>(0, ms);   // applied once the file is open
+        d->session->initialSeekMs = d->pendingSeekMs;
         return;
     }
     if (!d->session->seekable)
@@ -733,30 +771,46 @@ void AudioEngine::setState(State s)
 void AudioEngine::checkOpened()
 {
     const std::shared_ptr<Session> s = d->session;
+    if (!d->threadStarted && s->status.load() == Session::Opening) {
+        const ThreadStart r = startThread(s, d->threads);
+        d->threadStarted = r == ThreadStart::Started;
+        if (r == ThreadStart::Busy && d->openClock.elapsed() > 10000) {
+            s->error = QStringLiteral("Диск или поток не отвечает: другие файлы всё ещё открываются");
+            s->status.store(Session::Failed, std::memory_order_release);
+        }
+        if (d->threadStarted)
+            d->timer.setInterval(5);
+    }
     const int status = s->status.load(std::memory_order_acquire);
-    if (status == Session::Opening)
+    if (status == Session::Opening) {
+        if (d->openClock.elapsed() > 1000)
+            d->timer.setInterval(50);     // a slow one: no need to look 200 times a second
         return;
+    }
     d->timer.setInterval(50);
     if (status == Session::Failed) {
         m_lastError = s->error;
+        const bool wasPlaying = m_state == State::Playing;
         unload();
-        emit loadFailed(s->error);
+        emit loadFailed(s->error, wasPlaying);
         return;
     }
     d->opened = true;
-    const qint64 seekTo = d->pendingSeekMs;
     d->pendingSeekMs = -1;
+    const qint64 lateSeek = s->initialSeekMs.exchange(-1);   // asked for after the thread looked
     emit durationChanged(s->durationMs);
     if (d->session != s)
         return;
-    if (seekTo > 0)
-        seek(seekTo);
+    if (s->appliedSeekMs > 0)
+        emit seeked(s->appliedSeekMs);
+    if (d->session == s && lateSeek > 0)
+        seek(lateSeek);
     if (d->session != s)
         return;
     emit positionChanged(positionMs());
     if (d->session != s)
         return;
-    if (m_state == State::Playing && (!d->deviceOk || !startDevice()))
+    if (m_state == State::Playing && (!d->deviceOk || !startDevice()) && d->session == s)
         setState(State::Stopped);
     if (d->session == s)
         emit loaded();

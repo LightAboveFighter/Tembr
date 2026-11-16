@@ -845,7 +845,7 @@ void MainWindow::trackLoaded()
     m_osd->refresh(model->track(row), m_engine->durationMs());   // the length, if the tags had none
 }
 
-void MainWindow::trackLoadFailed(const QString &error)
+void MainWindow::trackLoadFailed(const QString &error, bool wasPlaying)
 {
     PlaylistModel *model = m_playingPage ? m_playingPage->model() : nullptr;
     const int row = model ? model->currentRow() : -1;
@@ -855,8 +855,9 @@ void MainWindow::trackLoadFailed(const QString &error)
     } else {
         statusBar()->showMessage(error, 5000);
     }
-    // Skip to the next track, but don't spin through a playlist of dead files.
-    if (model && ++m_failStreak < model->rowCount())
+    // Skip to the next track, but don't spin through a playlist of dead files,
+    // and not when the user stopped or paused while it was opening.
+    if (model && wasPlaying && ++m_failStreak < model->rowCount())
         QTimer::singleShot(0, this, &MainWindow::playNext);
     else
         m_failStreak = 0;

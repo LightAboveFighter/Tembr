@@ -55,7 +55,9 @@ public:
 
 signals:
     void loaded();                            // the file is open: duration and seekability are known
-    void loadFailed(const QString &message);  // the engine is unloaded
+    // The engine is unloaded. `wasPlaying`: the user still wanted it to play
+    // (not stopped or paused while it was opening).
+    void loadFailed(const QString &message, bool wasPlaying);
     void stateChanged(AudioEngine::State state);
     void positionChanged(qint64 ms);
     void durationChanged(qint64 ms);

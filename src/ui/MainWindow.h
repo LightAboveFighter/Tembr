@@ -70,7 +70,7 @@ private:
     void playRow(PlaylistPage *page, int row, bool start = true);   // start = false: load only
     void playOrResume();
     void trackLoaded();
-    void trackLoadFailed(const QString &error);
+    void trackLoadFailed(const QString &error, bool wasPlaying);
     void playNext();
     void playPrevious();
     void changeVolume(int delta);
