@@ -6,6 +6,7 @@
 #include "ui/SettingsDialog.h"
 
 #include <QFuture>
+#include <QHash>
 #include <QImage>
 #include <QMainWindow>
 #include <QPointer>
@@ -20,12 +21,12 @@ class QLineEdit;
 class QMenu;
 class QSplitter;
 class QSystemTrayIcon;
-class QTabWidget;
 class LocalFiles;
 class MprisService;
 class NowPlayingPanel;
 class PlaybackController;
 class PlaylistModel;
+class PlaylistPanes;
 class TrackOsd;
 class TransportBar;
 class PlaylistPage;
@@ -34,7 +35,7 @@ class PlaylistPage;
 struct SessionSnapshot
 {
     TrackList localFiles;            // the Local files cache
-    QList<PlaylistData> playlists;   // the open playlists, in tab order
+    QList<PlaylistData> playlists;   // the user's playlists, in their order
     QStringList keptAside;           // copies of playlist files that could not be read in full
 };
 
@@ -66,6 +67,9 @@ public:
     // "volume-up", "volume-down", "show" — from MPRIS, tray, `tembr --next`.
     void handleCommand(const QString &command);
 
+    // Local files and the user's playlists side by side (also for tests).
+    PlaylistPanes *panes() const { return m_panes; }
+
 signals:
     void sessionLoaded();
 
@@ -85,34 +89,42 @@ private:
     void registerHotkeys();
     void releaseHotkeys();
 
-    PlaylistPage *currentPage() const;
-    PlaylistPage *editablePage();   // current page unless read-only, else another (created if needed)
+    // The list of the active pane (the one worked in last): Local files or
+    // the playlist shown.
+    PlaylistPage *activePage() const;
+    // Where added files go: the active list unless it is Local files, else
+    // the playlist shown; with no playlists at all, a new one.
+    PlaylistPage *editablePage();
     bool refuseReadOnly(PlaylistPage *page);
+    PlaylistPage *createPage(const QString &name);   // with its connections, not placed yet
     void createLocalPage();
     void applyLocalScan(const TrackList &tracks, int sortGeneration);
     void syncLocalSort();   // m_localSortColumn/Order to LocalFiles
     void showLocalFilesSettings();
     // column < 0: by folder, as found on disk (AIMP's grouping by %FileDir).
     void setLocalSort(int column, Qt::SortOrder order);
-    PlaylistPage *addPage(const QString &name);
-    void closePage(int index);
-    void renamePage(int index);
+    PlaylistPage *addPage(const QString &name);   // a user playlist, at the end of the list
+    void bringUp(PlaylistPage *page);   // shown in the right pane, which becomes active
+    QString newPlaylistName() const;
+    void closePage(PlaylistPage *page);
+    void renamePage(PlaylistPage *page);
 
     // Play/pause; stopped: the row in focus, else the current track, else the first one.
     void playOrResume();
     PlaylistPage *pageOf(PlaylistModel *model) const;
-    void showTrackInfo();
+    void showTrackInfo(PlaylistPage *page = nullptr);   // nullptr: the active list
     void updateNowPlaying();
     void loadCover(const Track &t);
     void setCover(int job, const QImage &image, const QString &artFile);
     void updateNavigation();
     void updateStats();
     void applySearch();
-    void showContextMenu(const QPoint &globalPos);
+    void setPageQuery(PlaylistPage *page, const QString &text, int field);
+    void showContextMenu(PlaylistPage *page, const QPoint &globalPos);
     // Copies the selected tracks of `from` to the end of `to` (nullptr: a new
     // playlist, named by the user).
     void sendSelected(PlaylistPage *from, PlaylistPage *to);
-    void showHeaderMenu(const QPoint &globalPos);
+    void showHeaderMenu(PlaylistPage *page, const QPoint &globalPos);
 
     void addFiles();
     void addFolder();
@@ -121,13 +133,13 @@ private:
     void findMovedFiles();
     // Deletes the files of the selected tracks from the device (to the trash,
     // after asking), then drops them from this playlist.
-    void deleteSelectedFiles();
+    void deleteSelectedFiles(PlaylistPage *page = nullptr);   // nullptr: the active list
     void forgetDeletedFiles(PlaylistPage *from, const QStringList &paths, bool fromAllPlaylists);
     void importFromAimp();
     void rememberMoves(const QList<QPair<QString, QString>> &moves);
     void offerToFindMoved(int missing, int total);
 
-    // Playlists, tab layout and player state; with the Local files cache
+    // Playlists, which one is shown and player state; with the Local files cache
     // (large) only when the player closes. Writes every file before
     // removing ones no longer used, so a failure never loses playlists.
     enum class SaveScope { Playlists, Everything };
@@ -153,7 +165,7 @@ private:
 
     QSplitter *m_splitter = nullptr;
     NowPlayingPanel *m_nowPlaying = nullptr;
-    QTabWidget *m_tabs = nullptr;
+    PlaylistPanes *m_panes = nullptr;
     QLineEdit *m_search = nullptr;
     QComboBox *m_searchField = nullptr;
     TransportBar *m_transport = nullptr;
@@ -165,13 +177,20 @@ private:
     QAction *m_actNext = nullptr;
     QAction *m_actShow = nullptr;
     QAction *m_actQuit = nullptr;
+    QAction *m_actNewPlaylist = nullptr;
+    QAction *m_actOpenPlaylists = nullptr;
+    QAction *m_actRename = nullptr;
+    QAction *m_actClose = nullptr;
 
     QSystemTrayIcon *m_tray = nullptr;
     TrackOsd *m_osd = nullptr;   // a window of its own (no parent)
     QMenu *m_trayMenu = nullptr;
     QAction *m_trayTitle = nullptr;
 
-    QByteArray m_headerState;   // column layout shared by all tabs
+    QByteArray m_headerState;   // column layout shared by all lists
+    // The query each list is filtered by ("" none): filtering 100k tracks
+    // takes a while, so a list is filtered again only when its query changes.
+    QHash<const PlaylistPage *, QString> m_pageQueries;
     int m_headerColumns = 0;    // columns m_headerState knows (newer ones start hidden)
     // Order of Local files, kept across rescans and restarts.
     int m_localSortColumn = -1;

@@ -18,6 +18,7 @@
 #include "ui/PlaylistFilterProxy.h"
 #include "ui/PlaylistModel.h"
 #include "ui/PlaylistPage.h"
+#include "ui/PlaylistPanes.h"
 #include "ui/Theme.h"
 #include "ui/TransportBar.h"
 #include "ui/TrackOsd.h"
@@ -48,8 +49,6 @@
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QSystemTrayIcon>
-#include <QTabBar>
-#include <QTabWidget>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -237,17 +236,19 @@ void MainWindow::buildActions()
     addItem(file, QStringLiteral("Добавить папку…"), QKeySequence(QStringLiteral("Ctrl+Shift+O")), this,
             &MainWindow::addFolder);
     file->addSeparator();
-    addItem(file, QStringLiteral("Новый плейлист"), QKeySequence::New, this,
-            [this] { m_tabs->setCurrentWidget(addPage(QStringLiteral("Плейлист %1").arg(m_tabs->count() + 1))); });
-    addItem(file, QStringLiteral("Открыть плейлисты…"), QKeySequence(QStringLiteral("Ctrl+L")), this,
-            &MainWindow::openPlaylists);
+    m_actNewPlaylist = addItem(file, QStringLiteral("Новый плейлист"), QKeySequence::New, this,
+                               [this] { bringUp(addPage(newPlaylistName())); });
+    m_actOpenPlaylists = addItem(file, QStringLiteral("Открыть плейлисты…"), QKeySequence(QStringLiteral("Ctrl+L")), this,
+                                 &MainWindow::openPlaylists);
     addItem(file, QStringLiteral("Импорт из AIMP (компьютер, Android)…"), QKeySequence(QStringLiteral("Ctrl+Shift+I")),
             this, &MainWindow::importFromAimp);
     addItem(file, QStringLiteral("Сохранить плейлист как…"), QKeySequence::Save, this, &MainWindow::savePlaylist);
-    addItem(file, QStringLiteral("Переименовать плейлист…"), QKeySequence(Qt::Key_F2), this,
-            [this] { renamePage(m_tabs->currentIndex()); });
-    addItem(file, QStringLiteral("Закрыть плейлист"), QKeySequence::Close, this,
-            [this] { closePage(m_tabs->currentIndex()); });
+    // The playlist in the right pane, also when Local files are active: it
+    // is the one named in its header.
+    m_actRename = addItem(file, QStringLiteral("Переименовать плейлист…"), QKeySequence(Qt::Key_F2), this,
+                          [this] { renamePage(m_panes->shownPlaylist()); });
+    m_actClose = addItem(file, QStringLiteral("Закрыть плейлист"), QKeySequence::Close, this,
+                         [this] { closePage(m_panes->shownPlaylist()); });
     file->addSeparator();
     addItem(file, QStringLiteral("Настройки…"), QKeySequence(QStringLiteral("Ctrl+,")), this, &MainWindow::showSettings);
     file->addSeparator();
@@ -256,7 +257,7 @@ void MainWindow::buildActions()
     // --- Playlist
     QMenu *pl = menuBar()->addMenu(QStringLiteral("&Плейлист"));
     addItem(pl, QStringLiteral("Информация о треке…"), QKeySequence(QStringLiteral("Ctrl+I")), this,
-            &MainWindow::showTrackInfo);
+            [this] { showTrackInfo(); });
     addItem(pl, QStringLiteral("Найти…"), QKeySequence::Find, this, [this] {
         m_search->setFocus();
         m_search->selectAll();
@@ -264,16 +265,16 @@ void MainWindow::buildActions()
     pl->addSeparator();
     pl->addAction(QStringLiteral("Найти перемещённые файлы…"), this, &MainWindow::findMovedFiles);
     pl->addAction(QStringLiteral("Удалить выбранные"), this, [this] {
-        if (auto *p = currentPage(); p && !refuseReadOnly(p))
+        if (auto *p = activePage(); p && !refuseReadOnly(p))
             p->removeSelected();
     });
-    pl->addAction(QStringLiteral("Удалить с диска…"), this, &MainWindow::deleteSelectedFiles);
+    pl->addAction(QStringLiteral("Удалить с диска…"), this, [this] { deleteSelectedFiles(); });
     pl->addAction(QStringLiteral("Удалить отсутствующие файлы"), this, [this] {
-        if (auto *p = currentPage(); p && !refuseReadOnly(p))
+        if (auto *p = activePage(); p && !refuseReadOnly(p))
             p->model()->removeMissing();
     });
     pl->addAction(QStringLiteral("Очистить плейлист"), this, [this] {
-        if (auto *p = currentPage(); p && !refuseReadOnly(p))
+        if (auto *p = activePage(); p && !refuseReadOnly(p))
             p->model()->clear();
     });
     pl->addSeparator();
@@ -309,7 +310,7 @@ void MainWindow::buildUi()
     m_nowPlaying = new NowPlayingPanel;
     m_nowPlaying->setMinimumWidth(200);
 
-    // --- Right: search + playlist tabs
+    // --- Right: search above Local files and one of the user's playlists
     auto *right = new QWidget;
     auto *rightLayout = new QVBoxLayout(right);
     rightLayout->setContentsMargins(4, 10, 10, 0);
@@ -339,29 +340,32 @@ void MainWindow::buildUi()
     connect(searchTimer, &QTimer::timeout, this, &MainWindow::applySearch);
     connect(m_searchField, &QComboBox::currentIndexChanged, this, &MainWindow::applySearch);
     connect(m_search, &QLineEdit::returnPressed, this, [this] {
-        // Enter in the search box plays the first match.
-        if (auto *p = currentPage(); p && p->proxy()->rowCount() > 0)
-            m_playback->playRow(p->model(), p->proxy()->mapToSource(p->proxy()->index(0, 0)).row());
+        // Enter in the search box plays the first match of the active list,
+        // else of the other one (if the search filters it too).
+        QList<PlaylistPage *> pages = {activePage()};
+        if (m_settings.searchScope == AppSettings::SearchScope::BothLists)
+            pages << m_panes->otherPage();
+        for (PlaylistPage *p : std::as_const(pages)) {
+            if (p && p->proxy()->rowCount() > 0) {
+                m_playback->playRow(p->model(), p->proxy()->mapToSource(p->proxy()->index(0, 0)).row());
+                return;
+            }
+        }
     });
 
-    m_tabs = new QTabWidget;
-    m_tabs->setTabsClosable(true);
-    m_tabs->setMovable(true);
-    m_tabs->setDocumentMode(true);
-    m_tabs->tabBar()->setExpanding(false);
-    connect(m_tabs, &QTabWidget::tabCloseRequested, this, &MainWindow::closePage);
-    connect(m_tabs->tabBar(), &QTabBar::tabMoved, this, &MainWindow::scheduleSave);
-    connect(m_tabs, &QTabWidget::currentChanged, this, [this] {
+    m_panes = new PlaylistPanes;
+    m_panes->setPlaylistActions(m_actNewPlaylist, m_actOpenPlaylists, m_actRename, m_actClose);
+    // Another playlist shown or another pane active: the search, the totals
+    // and "next" (when nothing plays) follow.
+    const auto follow = [this] {
         applySearch();
         updateStats();
-    });
-    connect(m_tabs->tabBar(), &QTabBar::tabBarDoubleClicked, this, [this](int index) {
-        if (index < 0)
-            m_tabs->setCurrentWidget(addPage(QStringLiteral("Плейлист %1").arg(m_tabs->count() + 1)));
-        else
-            renamePage(index);
-    });
-    rightLayout->addWidget(m_tabs, 1);
+        updateNavigation();
+    };
+    connect(m_panes, &PlaylistPanes::shownChanged, this, follow);
+    connect(m_panes, &PlaylistPanes::activeChanged, this, follow);
+    connect(m_panes, &PlaylistPanes::orderChanged, this, &MainWindow::scheduleSave);
+    rightLayout->addWidget(m_panes, 1);
 
     m_splitter = new QSplitter(Qt::Horizontal);
     m_splitter->addWidget(m_nowPlaying);
@@ -412,7 +416,9 @@ void MainWindow::applySettings(const AppSettings &s)
         qApp->setProperty("tembrThemeApplied", true);
     }
     refreshIcons();
+    m_panes->refreshActiveMark();
     setupTray(s.trayIcon);
+    applySearch();   // the search may now filter one list or both
 }
 
 void MainWindow::setupTray(bool enabled)
@@ -539,7 +545,7 @@ void MainWindow::handleCommand(const QString &command)
         m_pendingCommands << command;
         return;
     }
-    PlaylistModel *fallback = currentPage() ? currentPage()->model() : nullptr;   // when nothing plays
+    PlaylistModel *fallback = activePage() ? activePage()->model() : nullptr;   // when nothing plays
     if (command == QLatin1String("play-pause"))
         playOrResume();
     else if (command == QLatin1String("play")) {
@@ -563,25 +569,25 @@ void MainWindow::handleCommand(const QString &command)
 
 // --- Pages -------------------------------------------------------------------
 
-PlaylistPage *MainWindow::currentPage() const
+PlaylistPage *MainWindow::activePage() const
 {
-    return qobject_cast<PlaylistPage *>(m_tabs->currentWidget());
+    return m_panes->activePage();
 }
 
-PlaylistPage *MainWindow::addPage(const QString &name)
+PlaylistPage *MainWindow::createPage(const QString &name)
 {
-    if (auto *cur = currentPage()) {
-        m_headerState = cur->view()->horizontalHeader()->saveState();
+    // A new list takes the column layout of the one worked in.
+    if (auto *from = activePage()) {
+        m_headerState = from->view()->horizontalHeader()->saveState();
         m_headerColumns = PlaylistModel::ColumnCount;
     }
 
-    auto *page = new PlaylistPage(name, m_tabs);
+    auto *page = new PlaylistPage(name);
     if (!m_headerState.isEmpty() && page->view()->horizontalHeader()->restoreState(m_headerState)) {
         for (int col = m_headerColumns; col < PlaylistModel::ColumnCount; ++col)
             page->view()->horizontalHeader()->setSectionHidden(col, true);
     }
     page->view()->horizontalHeader()->setSortIndicatorShown(false);
-    m_tabs->addTab(page, name);
 
     connect(page, &PlaylistPage::trackActivated, this, [this, page](int row) { m_playback->playRow(page->model(), row); });
     connect(page, &PlaylistPage::tracksAdded, this, [this, page](int row, bool playFirst) {
@@ -596,20 +602,49 @@ PlaylistPage *MainWindow::addPage(const QString &name)
     connect(page->model(), &PlaylistModel::contentsChanged, this, changed);
     connect(page->model(), &QAbstractItemModel::layoutChanged, this, changed);
     connect(page, &PlaylistPage::statsChanged, this, [this, page] {
-        if (page == currentPage())
+        if (page == activePage())
             updateStats();
         if (page->model() == m_playback->playingModel())
             updateNavigation();
     });
-    connect(page, &PlaylistPage::contextMenuRequested, this, &MainWindow::showContextMenu);
+    // Del in Local files: say why nothing happens (the page itself ignores it).
+    connect(page->view(), &PlaylistView::deletePressed, this, [this, page] { refuseReadOnly(page); });
+    connect(page, &PlaylistPage::contextMenuRequested, this,
+            [this, page](const QPoint &p) { showContextMenu(page, p); });
     connect(page->view()->horizontalHeader(), &QWidget::customContextMenuRequested, this,
-            [this, page](const QPoint &p) { showHeaderMenu(page->view()->horizontalHeader()->mapToGlobal(p)); });
+            [this, page](const QPoint &p) { showHeaderMenu(page, page->view()->horizontalHeader()->mapToGlobal(p)); });
     return page;
 }
 
-void MainWindow::closePage(int index)
+PlaylistPage *MainWindow::addPage(const QString &name)
 {
-    auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(index));
+    PlaylistPage *page = createPage(name);
+    m_panes->addPlaylist(page);
+    return page;
+}
+
+void MainWindow::bringUp(PlaylistPage *page)
+{
+    if (!page)
+        return;
+    m_panes->showPlaylist(page);
+    m_panes->activatePage(page);
+}
+
+QString MainWindow::newPlaylistName() const
+{
+    QSet<QString> taken;
+    for (const PlaylistPage *p : m_panes->playlists())
+        taken.insert(p->model()->name());
+    for (int n = int(m_panes->playlists().size()) + 1;; ++n) {
+        const QString name = QStringLiteral("Плейлист %1").arg(n);
+        if (!taken.contains(name))
+            return name;
+    }
+}
+
+void MainWindow::closePage(PlaylistPage *page)
+{
     if (!page || refuseReadOnly(page))
         return;
     if (page->model()->rowCount() > 0) {
@@ -623,14 +658,14 @@ void MainWindow::closePage(int index)
     }
 
     m_playback->release(page->model());
-    m_tabs->removeTab(index);
+    m_pageQueries.remove(page);
+    m_panes->removePlaylist(page);
     scheduleSave();
     page->deleteLater();
 }
 
-void MainWindow::renamePage(int index)
+void MainWindow::renamePage(PlaylistPage *page)
 {
-    auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(index));
     if (!page || refuseReadOnly(page))
         return;
     QInputDialog dlg(this);
@@ -645,7 +680,7 @@ void MainWindow::renamePage(int index)
     if (name.isEmpty())
         return;
     page->model()->setName(name);
-    m_tabs->setTabText(index, name);
+    m_panes->refreshNames();
     scheduleSave();
 }
 
@@ -656,20 +691,18 @@ void MainWindow::openPaths(const QStringList &paths)
         return;
     }
     PlaylistPage *page = editablePage();
-    m_tabs->setCurrentWidget(page);
+    bringUp(page);
     page->addPaths(paths, -1, true);
 }
 
 PlaylistPage *MainWindow::editablePage()
 {
-    if (auto *cur = currentPage(); cur && !cur->isReadOnly())
-        return cur;
-    for (int i = 0; i < m_tabs->count(); ++i) {
-        auto *p = qobject_cast<PlaylistPage *>(m_tabs->widget(i));
-        if (p && !p->isReadOnly())
-            return p;
-    }
-    return addPage(QStringLiteral("Плейлист 1"));
+    if (auto *active = activePage(); active && !active->isReadOnly())
+        return active;
+    if (auto *shown = m_panes->shownPlaylist())
+        return shown;
+    // No playlists (the right pane is free): one is made for the files.
+    return addPage(newPlaylistName());
 }
 
 bool MainWindow::refuseReadOnly(PlaylistPage *page)
@@ -684,15 +717,9 @@ bool MainWindow::refuseReadOnly(PlaylistPage *page)
 
 void MainWindow::createLocalPage()
 {
-    m_localPage = addPage(QStringLiteral("Локальные файлы"));
+    m_localPage = createPage(QStringLiteral("Локальные файлы"));
     m_localPage->setReadOnly(true);
-    const int index = m_tabs->indexOf(m_localPage);
-    m_tabs->setTabIcon(index, Icons::make(Icons::Kind::Note, Theme::iconColor()));
-    m_tabs->setTabToolTip(index, QStringLiteral("Вся музыка из папок фонотеки. Изменить список нельзя — "
-                                                "только папки в настройках локальных файлов."));
-    // Not closable: drop the close button (its side depends on the style).
-    m_tabs->tabBar()->setTabButton(index, QTabBar::RightSide, nullptr);
-    m_tabs->tabBar()->setTabButton(index, QTabBar::LeftSide, nullptr);
+    m_panes->setLocalPage(m_localPage);
     // Sorting by a column header is remembered too, as in AIMP.
     connect(m_localPage->model(), &PlaylistModel::sorted, this, [this](int column, Qt::SortOrder order) {
         m_localSortColumn = column;
@@ -783,8 +810,8 @@ void MainWindow::playOrResume()
 {
     if (m_playback->pauseOrResume())
         return;
-    // Stopped: what to start is what the user looks at.
-    PlaylistPage *page = currentPage();
+    // Stopped: what to start is what the user works in.
+    PlaylistPage *page = activePage();
     if (!page)
         return;
     PlaylistModel *model = page->model();
@@ -886,7 +913,7 @@ void MainWindow::setCover(int job, const QImage &image, const QString &artFile)
 
 void MainWindow::updateNavigation()
 {
-    PlaylistModel *fallback = currentPage() ? currentPage()->model() : nullptr;
+    PlaylistModel *fallback = activePage() ? activePage()->model() : nullptr;
     m_mpris->setNavigation(m_playback->hasNext(fallback), m_playback->hasPrevious());
 }
 
@@ -894,7 +921,7 @@ void MainWindow::updateNavigation()
 
 void MainWindow::updateStats()
 {
-    auto *page = currentPage();
+    auto *page = activePage();
     if (!page) {
         m_stats->clear();
         return;
@@ -914,15 +941,34 @@ void MainWindow::updateStats()
     m_stats->setText(text);
 }
 
+// Both lists on screen, or only the active one (the other is shown whole).
+// Playlists not shown keep their filter until they are shown again.
 void MainWindow::applySearch()
 {
-    if (auto *page = currentPage())
-        page->setQuery(m_search->text(), TrackQuery::Field(m_searchField->currentData().toInt()));
+    const QString text = m_search->text();
+    const int field = m_searchField->currentData().toInt();
+    const bool both = m_settings.searchScope == AppSettings::SearchScope::BothLists;
+    PlaylistPage *active = activePage();
+    for (PlaylistPage *page : {m_localPage, m_panes->shownPlaylist()}) {
+        if (page)
+            setPageQuery(page, both || page == active ? text : QString(), field);
+    }
 }
 
-void MainWindow::showTrackInfo()
+void MainWindow::setPageQuery(PlaylistPage *page, const QString &text, int field)
 {
-    auto *page = currentPage();
+    const QString key = text.trimmed().isEmpty() ? QString() : QString::number(field) + QLatin1Char(':') + text;
+    const auto it = m_pageQueries.constFind(page);
+    if (it == m_pageQueries.cend() ? key.isEmpty() : *it == key)
+        return;   // filtered so already
+    m_pageQueries.insert(page, key);
+    page->setQuery(text, TrackQuery::Field(field));
+}
+
+void MainWindow::showTrackInfo(PlaylistPage *page)
+{
+    if (!page)
+        page = activePage();
     if (!page)
         return;
     int row = page->focusedSourceRow();
@@ -934,17 +980,18 @@ void MainWindow::showTrackInfo()
     dlg.exec();
 }
 
-void MainWindow::showContextMenu(const QPoint &globalPos)
+void MainWindow::showContextMenu(PlaylistPage *page, const QPoint &globalPos)
 {
-    auto *page = currentPage();
     if (!page)
         return;
+    // A right click works in that list: its pane becomes the active one.
+    m_panes->activatePage(page, false);
     const int row = page->focusedSourceRow();
     QMenu menu(this);
     if (row >= 0) {
         menu.addAction(Icons::make(Icons::Kind::Play, Theme::iconColor()), QStringLiteral("Воспроизвести"), this,
                        [this, page, row] { m_playback->playRow(page->model(), row); });
-        menu.addAction(QStringLiteral("Информация о треке…"), this, &MainWindow::showTrackInfo);
+        menu.addAction(QStringLiteral("Информация о треке…"), this, [this, page] { showTrackInfo(page); });
         const Track &t = page->model()->track(row);
         if (!t.isUrl()) {
             menu.addAction(QStringLiteral("Открыть папку с файлом"), this, [path = t.path] {
@@ -954,9 +1001,8 @@ void MainWindow::showContextMenu(const QPoint &globalPos)
         // Into another playlist (from Local files above all): copies, the
         // tracks stay here too.
         QMenu *send = menu.addMenu(QStringLiteral("Отправить в плейлист"));
-        for (int i = 0; i < m_tabs->count(); ++i) {
-            auto *to = qobject_cast<PlaylistPage *>(m_tabs->widget(i));
-            if (to && to != page && !to->isReadOnly())
+        for (PlaylistPage *to : m_panes->playlists()) {
+            if (to != page)
                 send->addAction(to->model()->name(), this, [this, page, to] { sendSelected(page, to); });
         }
         if (!send->isEmpty())
@@ -966,7 +1012,7 @@ void MainWindow::showContextMenu(const QPoint &globalPos)
         if (!page->isReadOnly())
             menu.addAction(QStringLiteral("Удалить из плейлиста"), page, &PlaylistPage::removeSelected);
         if (!t.isUrl())
-            menu.addAction(QStringLiteral("Удалить с диска…"), this, &MainWindow::deleteSelectedFiles);
+            menu.addAction(QStringLiteral("Удалить с диска…"), this, [this, page] { deleteSelectedFiles(page); });
         menu.addSeparator();
     }
     if (page->isReadOnly()) {
@@ -1006,7 +1052,7 @@ void MainWindow::sendSelected(PlaylistPage *from, PlaylistPage *to)
         QInputDialog dlg(this);
         dlg.setWindowTitle(QStringLiteral("Новый плейлист"));
         dlg.setLabelText(QStringLiteral("Название:"));
-        dlg.setTextValue(QStringLiteral("Плейлист %1").arg(m_tabs->count() + 1));
+        dlg.setTextValue(newPlaylistName());
         dlg.setOkButtonText(QStringLiteral("Создать"));
         dlg.setCancelButtonText(QStringLiteral("Отмена"));
         if (dlg.exec() != QDialog::Accepted || dlg.textValue().trimmed().isEmpty())
@@ -1017,9 +1063,10 @@ void MainWindow::sendSelected(PlaylistPage *from, PlaylistPage *to)
     statusBar()->showMessage(QStringLiteral("Добавлено треков в «%1»: %2").arg(to->model()->name()).arg(tracks.size()), 5000);
 }
 
-void MainWindow::showHeaderMenu(const QPoint &globalPos)
+// The columns are the same in every list: shown or hidden in all at once;
+// each list fits the widths to its own pane.
+void MainWindow::showHeaderMenu(PlaylistPage *page, const QPoint &globalPos)
 {
-    auto *page = currentPage();
     if (!page)
         return;
     QHeaderView *header = page->view()->horizontalHeader();
@@ -1031,17 +1078,17 @@ void MainWindow::showHeaderMenu(const QPoint &globalPos)
         a->setCheckable(true);
         a->setChecked(!header->isSectionHidden(col));
         connect(a, &QAction::toggled, this, [this, col](bool on) {
-            for (int i = 0; i < m_tabs->count(); ++i) {
-                if (auto *p = qobject_cast<PlaylistPage *>(m_tabs->widget(i)))
-                    p->view()->horizontalHeader()->setSectionHidden(col, !on);
-            }
+            m_localPage->view()->horizontalHeader()->setSectionHidden(col, !on);
+            for (PlaylistPage *p : m_panes->playlists())
+                p->view()->horizontalHeader()->setSectionHidden(col, !on);
         });
     }
     menu.addSeparator();
     menu.addAction(QStringLiteral("Ширина колонок по содержимому"), this, [this] {
         PlaylistPage::resetColumnWidths();
-        for (int i = 0; i < m_tabs->count(); ++i) {
-            if (auto *p = qobject_cast<PlaylistPage *>(m_tabs->widget(i)))
+        // The lists on screen now; the others when they are shown.
+        for (PlaylistPage *p : {m_localPage, m_panes->shownPlaylist()}) {
+            if (p)
                 p->fitColumns();
         }
     });
@@ -1060,7 +1107,7 @@ void MainWindow::addFiles()
         return;
     s.setValue(QStringLiteral("lastDir"), QFileInfo(files.first()).absolutePath());
     PlaylistPage *page = editablePage();
-    m_tabs->setCurrentWidget(page);
+    bringUp(page);
     page->addPaths(files);
 }
 
@@ -1073,7 +1120,7 @@ void MainWindow::addFolder()
         return;
     s.setValue(QStringLiteral("lastDir"), dir);
     PlaylistPage *page = editablePage();
-    m_tabs->setCurrentWidget(page);
+    bringUp(page);
     page->addPaths({dir});
 }
 
@@ -1106,20 +1153,19 @@ void MainWindow::openPlaylists()
             if (data.tracks.isEmpty())
                 continue;   // a damaged file: open what could be read
         }
-        // Reuse the current tab if it is empty, as AIMP does with a fresh playlist.
-        PlaylistPage *page = currentPage();
-        if (first || !page || page->isReadOnly() || page->model()->rowCount() > 0)
+        // Reuse the playlist shown if it is empty, as AIMP does with a fresh playlist.
+        PlaylistPage *page = m_panes->shownPlaylist();
+        if (first || !page || page->model()->rowCount() > 0)
             page = addPage(data.name);
         page->model()->setName(data.name);
-        m_tabs->setTabText(m_tabs->indexOf(page), data.name);
         page->model()->insertTracks(-1, data.tracks);
         if (!first)
             first = page;
         total += int(data.tracks.size());
         missing += page->model()->missingCount();
     }
-    if (first)
-        m_tabs->setCurrentWidget(first);
+    m_panes->refreshNames();
+    bringUp(first);   // each of them can be picked in the header
     if (!errors.isEmpty())
         QMessageBox::warning(this, windowTitle(), errors.join(QLatin1Char('\n')));
     statusBar()->showMessage(QStringLiteral("Открыто плейлистов: %1, треков: %2").arg(files.size() - errors.size()).arg(total), 5000);
@@ -1160,10 +1206,8 @@ void MainWindow::findMovedFiles()
 
         int missing = 0;
         QList<QPair<QString, QString>> moves;
-        for (int i = 0; i < m_tabs->count(); ++i) {
-            auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(i));
-            if (page->isReadOnly())
-                continue;   // Local files follow the folders by themselves
+        // Local files follow the folders by themselves.
+        for (PlaylistPage *page : m_panes->playlists()) {
             QList<QPair<int, QString>> pageMoves;
             const TrackList &tracks = page->model()->tracks();
             for (int row = 0; row < tracks.size(); ++row) {
@@ -1222,22 +1266,21 @@ void MainWindow::importFromAimp()
         const PlaylistData &data = r.playlists[i];
         PlaylistPage *page = nullptr;
         if (r.replaceSameName) {
-            for (int t = 0; t < m_tabs->count() && !page; ++t) {
-                auto *p = qobject_cast<PlaylistPage *>(m_tabs->widget(t));
-                if (p && !p->isReadOnly() && p->model()->name() == data.name)
+            for (PlaylistPage *p : m_panes->playlists()) {
+                if (p->model()->name() == data.name) {
                     page = p;
+                    break;
+                }
             }
         }
-        if (!page && i == 0 && currentPage() && !currentPage()->isReadOnly()
-            && currentPage()->model()->rowCount() == 0)
-            page = currentPage();   // a fresh empty tab
+        if (PlaylistPage *shown = m_panes->shownPlaylist(); !page && i == 0 && shown && shown->model()->rowCount() == 0)
+            page = shown;   // a fresh empty playlist
         if (page && data.tracks.isEmpty() && page->model()->rowCount() > 0)
-            continue;   // nothing read from it: never empty a full tab
+            continue;   // nothing read from it: never empty a full playlist
         if (!page)
             page = addPage(data.name);
         page->model()->clear();
         page->model()->setName(data.name);
-        m_tabs->setTabText(m_tabs->indexOf(page), data.name);
         page->model()->insertTracks(-1, data.tracks);
 
         if (!first)
@@ -1251,17 +1294,18 @@ void MainWindow::importFromAimp()
             page->scrollToSourceRow(r.playingRow);
         }
     }
-    if (PlaylistPage *show = active ? active : first)
-        m_tabs->setCurrentWidget(show);
+    m_panes->refreshNames();
+    bringUp(active ? active : first);
     rememberMoves(r.moves);
-    updateNowPlaying();   // a replaced tab may have held the current track
+    updateNowPlaying();   // a replaced playlist may have held the current track
     updateStats();
     QMessageBox::information(this, windowTitle(), QStringLiteral("Импорт завершён.\n\n") + r.summary);
 }
 
-void MainWindow::deleteSelectedFiles()
+void MainWindow::deleteSelectedFiles(PlaylistPage *page)
 {
-    PlaylistPage *page = currentPage();
+    if (!page)
+        page = activePage();
     if (!page)
         return;
     QStringList paths;
@@ -1331,10 +1375,7 @@ void MainWindow::forgetDeletedFiles(PlaylistPage *from, const QStringList &paths
     const Track *playing = m_playback->currentTrack();
     const bool playingGone = playing && gone.contains(playing->path);
 
-    for (int i = 0; i < m_tabs->count(); ++i) {
-        auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(i));
-        if (!page || page->isReadOnly())
-            continue;   // Local files: rescanned below
+    for (PlaylistPage *page : m_panes->playlists()) {   // Local files: rescanned below
         QList<int> rows;
         const TrackList &tracks = page->model()->tracks();
         for (int row = 0; row < tracks.size(); ++row) {
@@ -1359,7 +1400,7 @@ void MainWindow::forgetDeletedFiles(PlaylistPage *from, const QStringList &paths
 
 void MainWindow::savePlaylist()
 {
-    auto *page = currentPage();
+    auto *page = activePage();
     if (!page)
         return;
     QSettings s;
@@ -1398,17 +1439,14 @@ void MainWindow::saveSession(SaveScope scope)
     // Local files cache would be emptied.
     if (!m_sessionLoaded)
         return;
-    // Tab indexes count every tab; files are written for ordinary playlists only
-    // (Local files are rebuilt from the folders, with their own cache).
-    int playingTab = -1;
+    // Files are written for the user's playlists only (Local files are
+    // rebuilt from the folders, with their own cache).
     QList<PlaylistData> playlists;
-    for (int i = 0; i < m_tabs->count(); ++i) {
-        auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(i));
-        if (page->model() == m_playback->playingModel())
-            playingTab = i;
-        if (page != m_localPage)
-            playlists.append({page->model()->name(), page->model()->tracks()});
-    }
+    for (const PlaylistPage *page : m_panes->playlists())
+        playlists.append({page->model()->name(), page->model()->tracks()});
+    PlaylistModel *playingModel = m_playback->playingModel();
+    const bool playingLocal = playingModel && playingModel == m_localPage->model();
+    const int playingPlaylist = m_panes->indexOf(pageOf(playingModel));
     const int files = int(playlists.size());
     const auto reportFailed = [this](const QStringList &failed) {
         if (!failed.isEmpty())
@@ -1435,13 +1473,22 @@ void MainWindow::saveSession(SaveScope scope)
         m_localFiles->saveCache(m_localPage->model()->tracks());
     }
 
+    // Version 3: places are named by list (Local files, or user playlist N
+    // in the order of the files), not by tab position as in versions 1-2.
     QSettings s;
-    s.setValue(QStringLiteral("session/version"), 2);
+    s.setValue(QStringLiteral("session/version"), 3);
     s.setValue(QStringLiteral("session/count"), files);
-    s.setValue(QStringLiteral("session/localTab"), m_tabs->indexOf(m_localPage));
-    s.setValue(QStringLiteral("session/current"), m_tabs->currentIndex());
-    s.setValue(QStringLiteral("session/playingTab"), playingTab);
-    s.setValue(QStringLiteral("session/playingRow"), m_playback->playingModel() ? m_playback->playingModel()->currentRow() : -1);
+    s.setValue(QStringLiteral("session/shown"), m_panes->indexOf(m_panes->shownPlaylist()));
+    s.setValue(QStringLiteral("session/active"), m_panes->activePane() == PlaylistPanes::Pane::Local
+                                                     ? QStringLiteral("local")
+                                                     : QStringLiteral("playlist"));
+    s.setValue(QStringLiteral("session/playingList"), playingLocal           ? QStringLiteral("local")
+                                                      : playingPlaylist >= 0 ? QStringLiteral("playlist")
+                                                                             : QString());
+    s.setValue(QStringLiteral("session/playingPlaylist"), playingPlaylist);
+    s.setValue(QStringLiteral("session/playingRow"), playingModel ? playingModel->currentRow() : -1);
+    for (const char *old : {"session/localTab", "session/current", "session/playingTab"})
+        s.remove(QLatin1String(old));   // tab positions of version 2
     // Rows of Local files change with the folders: remember the file.
     const Track *playing = m_playback->currentTrack();
     s.setValue(QStringLiteral("session/playingPath"), playing ? playing->path : QString());
@@ -1449,7 +1496,8 @@ void MainWindow::saveSession(SaveScope scope)
     s.setValue(QStringLiteral("searchField"), m_searchField->currentIndex());
     s.setValue(QStringLiteral("geometry"), saveGeometry());
     s.setValue(QStringLiteral("splitter"), m_splitter->saveState());
-    if (auto *page = currentPage())
+    s.setValue(QStringLiteral("panes"), m_panes->splitter()->saveState());
+    if (auto *page = activePage())
         s.setValue(QStringLiteral("header"), page->view()->horizontalHeader()->saveState());
     s.setValue(QStringLiteral("headerColumns"), int(PlaylistModel::ColumnCount));
 }
@@ -1459,6 +1507,7 @@ void MainWindow::restoreSession()
     QSettings s;
     restoreGeometry(s.value(QStringLiteral("geometry")).toByteArray());
     m_splitter->restoreState(s.value(QStringLiteral("splitter")).toByteArray());
+    m_panes->splitter()->restoreState(s.value(QStringLiteral("panes")).toByteArray());
     m_playback->setVolume(s.value(QStringLiteral("volume"), 70).toInt());
     m_mpris->setVolume(m_playback->volume() / 100.0);
     m_searchField->setCurrentIndex(s.value(QStringLiteral("searchField"), 0).toInt());
@@ -1477,7 +1526,7 @@ void MainWindow::restoreSession()
     // playlists cannot be used; files and commands that come are kept.
     for (const QPointer<QAction> &a : std::as_const(m_needSession))
         a->setEnabled(false);
-    for (QWidget *w : {static_cast<QWidget *>(m_tabs), static_cast<QWidget *>(m_search),
+    for (QWidget *w : {static_cast<QWidget *>(m_panes), static_cast<QWidget *>(m_search),
                        static_cast<QWidget *>(m_searchField)})
         w->setEnabled(false);
     statusBar()->showMessage(QStringLiteral("Загрузка плейлистов…"));
@@ -1519,23 +1568,47 @@ void MainWindow::applySession(const SessionSnapshot &session)
                                      + unreadable.join(QLatin1Char('\n')));
         });
     }
-    if (m_tabs->count() == 1)
-        addPage(QStringLiteral("Плейлист 1"));
+    // No playlists is allowed: the right pane then stays free until one is
+    // made (adding files makes one).
 
-    // Sessions saved before Local files existed had no such tab: it goes first
-    // and every saved index moves by one.
-    const bool oldSession = s.value(QStringLiteral("session/version"), 1).toInt() < 2;
-    const int shift = oldSession ? 1 : 0;
-    const int localTab = oldSession ? 0 : s.value(QStringLiteral("session/localTab"), 0).toInt();
-    m_tabs->tabBar()->moveTab(m_tabs->indexOf(m_localPage), qBound(0, localTab, m_tabs->count() - 1));
-    m_tabs->setCurrentIndex(qBound(0, s.value(QStringLiteral("session/current"), 0).toInt() + shift, m_tabs->count() - 1));
+    // Where the user was: the playlist shown, the active list, the track
+    // played last. Versions 1 and 2 saved tab positions: version 2 counts
+    // the Local files tab (at session/localTab) among them; version 1 predates
+    // it, so its indexes are those of the playlists.
+    const int version = s.value(QStringLiteral("session/version"), 1).toInt();
+    int shown = 0;
+    bool localActive = false;
+    bool playingLocal = false;
+    int playingPlaylist = -1;
+    int playingRow = s.value(QStringLiteral("session/playingRow"), -1).toInt();
+    if (version >= 3) {
+        shown = s.value(QStringLiteral("session/shown"), 0).toInt();
+        localActive = s.value(QStringLiteral("session/active")).toString() == QLatin1String("local");
+        const QString list = s.value(QStringLiteral("session/playingList")).toString();
+        playingLocal = list == QLatin1String("local");
+        if (list == QLatin1String("playlist"))
+            playingPlaylist = s.value(QStringLiteral("session/playingPlaylist"), -1).toInt();
+    } else {
+        const int localTab = version == 2 ? s.value(QStringLiteral("session/localTab"), 0).toInt() : -1;
+        // A tab position to a playlist index; -1 with *local for Local files.
+        const auto fromTab = [localTab](int tab, bool *local) {
+            *local = localTab >= 0 && tab == localTab;
+            if (*local || tab < 0)
+                return -1;
+            return localTab >= 0 && tab > localTab ? tab - 1 : tab;
+        };
+        const int current = fromTab(s.value(QStringLiteral("session/current"), 0).toInt(), &localActive);
+        playingPlaylist = fromTab(s.value(QStringLiteral("session/playingTab"), -1).toInt(), &playingLocal);
+        // Local files were in front: the playlist that played goes beside them.
+        shown = localActive ? qMax(0, playingPlaylist) : current;
+    }
+
+    const QList<PlaylistPage *> &pages = m_panes->playlists();
+    if (!pages.isEmpty())
+        m_panes->showPlaylist(pages.at(qBound(0, shown, int(pages.size()) - 1)));
 
     // Mark the last played track so that Play continues from it.
-    int playingTab = s.value(QStringLiteral("session/playingTab"), -1).toInt();
-    if (playingTab >= 0)
-        playingTab += shift;
-    int playingRow = s.value(QStringLiteral("session/playingRow"), -1).toInt();
-    auto *playing = qobject_cast<PlaylistPage *>(m_tabs->widget(playingTab));
+    PlaylistPage *playing = playingLocal ? m_localPage : pages.value(playingPlaylist, nullptr);
     if (playing && playing == m_localPage) {
         const QString path = s.value(QStringLiteral("session/playingPath")).toString();
         const TrackList &tracks = playing->model()->tracks();
@@ -1557,14 +1630,13 @@ void MainWindow::applySession(const SessionSnapshot &session)
         if (a)
             a->setEnabled(true);
     }
-    for (QWidget *w : {static_cast<QWidget *>(m_tabs), static_cast<QWidget *>(m_search),
+    for (QWidget *w : {static_cast<QWidget *>(m_panes), static_cast<QWidget *>(m_search),
                        static_cast<QWidget *>(m_searchField)})
         w->setEnabled(true);
     statusBar()->clearMessage();
+    m_panes->activate(localActive ? PlaylistPanes::Pane::Local : PlaylistPanes::Pane::Playlist);
     updateNowPlaying();
     updateStats();
-    if (auto *page = currentPage())
-        page->view()->setFocus();
     // Bring Local files up to date with the folders (the cache was shown
     // meanwhile); only now, with the cache in: from an empty list every
     // track would get a new uid and its tags read again.
