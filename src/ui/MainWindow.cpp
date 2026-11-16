@@ -749,17 +749,9 @@ void MainWindow::applyLocalScan(const TrackList &found, int sortGeneration)
     if (LocalLibrary::sameList(model->tracks(), tracks))
         return;
 
-    // Keep the list where the user was looking.
-    PlaylistView *view = m_localPage->view();
-    const QModelIndex top = m_localPage->proxy()->mapToSource(view->indexAt(QPoint(4, 4)));
-    const quint64 topUid = top.isValid() ? model->track(top.row()).uid : 0;
-    model->setTracks(tracks);
+    // Keeps the scroll position, the selection and the current track.
+    m_localPage->replaceTracks(tracks);
     m_localResort = byTags && std::any_of(tracks.cbegin(), tracks.cend(), [](const Track &t) { return !t.scanned; });
-    if (topUid) {
-        const QModelIndex idx = m_localPage->proxy()->mapFromSource(model->index(model->rowOfUid(topUid), 0));
-        if (idx.isValid())
-            view->scrollTo(idx, QAbstractItemView::PositionAtTop);
-    }
     if (m_localPage->model() == m_playback->playingModel())
         updateNowPlaying();
     updateStats();

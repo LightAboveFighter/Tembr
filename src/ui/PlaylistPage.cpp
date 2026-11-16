@@ -298,6 +298,65 @@ QList<int> PlaylistPage::selectedSourceRows() const
     return rows;
 }
 
+void PlaylistPage::replaceTracks(const TrackList &tracks)
+{
+    // The reset drops the selection and the current index, and a rescan can
+    // land at any moment, also while the user is picking tracks to send or
+    // delete. Remember them by uid (a rescan keeps the uids of known files),
+    // since rows move when files come and go.
+    QItemSelectionModel *sel = m_view->selectionModel();
+    const TrackList &old = m_model->tracks();
+    auto uidAt = [&](const QModelIndex &proxyIdx) -> quint64 {
+        const QModelIndex src = m_proxy->mapToSource(proxyIdx);
+        return src.isValid() ? old.at(src.row()).uid : 0;
+    };
+    const quint64 topUid = uidAt(m_view->indexAt(QPoint(4, 4)));
+    const quint64 currentUid = uidAt(m_view->currentIndex());
+    const QList<int> proxyRows = selectedProxyRows(sel);
+    QList<quint64> selectedUids;
+    selectedUids.reserve(proxyRows.size());
+    for (int row : proxyRows)
+        selectedUids.append(uidAt(m_proxy->index(row, 0)));
+
+    m_model->setTracks(tracks);
+
+    auto proxyIndexOf = [this](quint64 uid) -> QModelIndex {
+        const int row = uid ? m_model->rowOfUid(uid) : -1;
+        return row < 0 ? QModelIndex() : m_proxy->mapFromSource(m_model->index(row, 0));
+    };
+    // Rows still there (and not filtered out), as contiguous runs: a whole
+    // list selected with Ctrl+A comes back as one range in one select().
+    QList<int> rows;
+    rows.reserve(selectedUids.size());
+    for (quint64 uid : std::as_const(selectedUids)) {
+        const QModelIndex idx = proxyIndexOf(uid);
+        if (idx.isValid())
+            rows.append(idx.row());
+    }
+    std::sort(rows.begin(), rows.end());
+    QItemSelection selection;
+    const int lastColumn = m_proxy->columnCount() - 1;
+    for (qsizetype i = 0; i < rows.size();) {
+        qsizetype j = i;
+        while (j + 1 < rows.size() && rows[j + 1] <= rows[j] + 1)
+            ++j;
+        selection.append(QItemSelectionRange(m_proxy->index(rows[i], 0), m_proxy->index(rows[j], lastColumn)));
+        i = j + 1;
+    }
+    // NoUpdate: the current track alone is not a selection (the user may
+    // have Ctrl+clicked it off).
+    const QModelIndex current = proxyIndexOf(currentUid);
+    if (current.isValid())
+        sel->setCurrentIndex(current, QItemSelectionModel::NoUpdate);
+    if (!selection.isEmpty())
+        sel->select(selection, QItemSelectionModel::Select);
+
+    // Keep the list where the user was looking.
+    const QModelIndex top = proxyIndexOf(topUid);
+    if (top.isValid())
+        m_view->scrollTo(top, QAbstractItemView::PositionAtTop);
+}
+
 int PlaylistPage::focusedSourceRow() const
 {
     const QModelIndex cur = m_view->currentIndex();
