@@ -370,6 +370,11 @@ void MainWindow::buildUi()
         bringUp(page);
         page->addPaths(paths);
     });
+    connect(m_panes, &PlaylistPanes::tracksDropped, this, [this](PlaylistPage *source, const QList<quint64> &uids) {
+        PlaylistPage *page = editablePage();   // none yet: a new one
+        bringUp(page);
+        page->receiveTracks(source, uids, -1);
+    });
     rightLayout->addWidget(m_panes, 1);
 
     m_splitter = new QSplitter(Qt::Horizontal);
@@ -616,6 +621,11 @@ PlaylistPage *MainWindow::createPage(const QString &name)
     connect(page->view(), &PlaylistView::deletePressed, this, [this, page] { refuseReadOnly(page); });
     connect(page, &PlaylistPage::contextMenuRequested, this,
             [this, page](const QPoint &p) { showContextMenu(page, p); });
+    // Dropping into a list is working in it.
+    connect(page, &PlaylistPage::dropReceived, this, [this, page] { m_panes->activatePage(page); });
+    connect(page, &PlaylistPage::tracksReceived, this, [this, page](int count) {
+        statusBar()->showMessage(QStringLiteral("Добавлено треков в «%1»: %2").arg(page->model()->name()).arg(count), 5000);
+    });
     connect(page->view()->horizontalHeader(), &QWidget::customContextMenuRequested, this,
             [this, page](const QPoint &p) { showHeaderMenu(page, page->view()->horizontalHeader()->mapToGlobal(p)); });
     return page;

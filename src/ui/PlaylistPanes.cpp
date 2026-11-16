@@ -22,28 +22,45 @@
 
 namespace {
 
-// The free right pane takes files dropped from a file manager: they make a
-// playlist, as files added from the menu do.
+// The free right pane takes files dropped from a file manager and tracks
+// dragged from Local files: they make a playlist, as files added from the
+// menu do.
 class FileDropArea : public QWidget
 {
 public:
     std::function<void(const QStringList &)> dropped;
+    std::function<void(const TrackDragData *)> tracksDropped;
 
     FileDropArea() { setAcceptDrops(true); }
 
 protected:
+    static bool takes(const QMimeData *mime)
+    {
+        return mime->hasUrls() || qobject_cast<const TrackDragData *>(mime);
+    }
     void dragEnterEvent(QDragEnterEvent *e) override
     {
-        if (e->mimeData()->hasUrls())
-            e->acceptProposedAction();
+        if (takes(e->mimeData())) {
+            e->setDropAction(Qt::CopyAction);
+            e->accept();
+        }
     }
     void dragMoveEvent(QDragMoveEvent *e) override
     {
-        if (e->mimeData()->hasUrls())
-            e->acceptProposedAction();
+        if (takes(e->mimeData())) {
+            e->setDropAction(Qt::CopyAction);
+            e->accept();
+        }
     }
     void dropEvent(QDropEvent *e) override
     {
+        if (const auto *tracks = qobject_cast<const TrackDragData *>(e->mimeData())) {
+            e->setDropAction(Qt::CopyAction);
+            e->accept();
+            if (tracksDropped)
+                tracksDropped(tracks);
+            return;
+        }
         QStringList paths;
         for (const QUrl &url : e->mimeData()->urls())
             paths << (url.isLocalFile() ? url.toLocalFile() : url.toString());
@@ -129,13 +146,17 @@ PlaylistPanes::PlaylistPanes(QWidget *parent)
     // No playlists: the pane stays free, with a way to make one.
     auto *drop = new FileDropArea;
     drop->dropped = [this](const QStringList &paths) { emit filesDropped(paths); };
+    drop->tracksDropped = [this](const TrackDragData *data) {
+        if (data->source())
+            emit tracksDropped(data->source(), data->uids());
+    };
     m_placeholder = drop;
     auto *ph = new QVBoxLayout(m_placeholder);
     ph->addStretch(2);
     auto *text = new QLabel(QStringLiteral("Плейлистов пока нет"));
     text->setAlignment(Qt::AlignCenter);
     text->setForegroundRole(QPalette::PlaceholderText);
-    auto *hint = new QLabel(QStringLiteral("Добавленные или перетащенные сюда файлы попадут в новый плейлист."));
+    auto *hint = new QLabel(QStringLiteral("Добавленные или перетащенные сюда файлы и треки попадут в новый плейлист."));
     hint->setAlignment(Qt::AlignCenter);
     hint->setWordWrap(true);
     hint->setForegroundRole(QPalette::PlaceholderText);
