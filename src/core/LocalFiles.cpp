@@ -258,7 +258,8 @@ TrackList LocalFiles::loadCache() const
 {
     PlaylistData data;
     const QString file = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/local-files.xspf");
-    return PlaylistIO::load(file, data) ? data.tracks : TrackList();
+    PlaylistIO::load(file, data);   // damaged: what could be read; the rescan reads the rest
+    return data.tracks;
 }
 
 void LocalFiles::saveCache(const TrackList &tracks) const

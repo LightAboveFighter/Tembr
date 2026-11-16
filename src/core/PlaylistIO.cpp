@@ -57,6 +57,22 @@ QString xspfLocation(const QString &raw)
     return loc;
 }
 
+// Non-empty lines, whatever the line ends. No regular expression: one
+// invalid character would make it return the whole text as one line.
+QStringList splitLines(const QString &text)
+{
+    QStringList out;
+    qsizetype start = 0;
+    for (qsizetype i = 0; i <= text.size(); ++i) {
+        if (i == text.size() || text.at(i) == QLatin1Char('\n') || text.at(i) == QLatin1Char('\r')) {
+            if (i > start)
+                out << text.mid(start, i - start);
+            start = i + 1;
+        }
+    }
+    return out;
+}
+
 void splitArtistTitle(const QString &s, Track &t)
 {
     const int sep = s.indexOf(QLatin1String(" - "));
@@ -179,7 +195,7 @@ QByteArray writePls(const PlaylistData &data)
 QString locationFor(const QString &path)
 {
     if (path.contains(QLatin1String("://")))
-        return path;
+        return replaceLoneSurrogates(path);
     return QUrl::fromLocalFile(path).toString(QUrl::FullyEncoded);
 }
 
@@ -194,19 +210,19 @@ QByteArray writeXspf(const PlaylistData &data)
     w.writeAttribute(QStringLiteral("version"), QStringLiteral("1"));
     w.writeDefaultNamespace(QStringLiteral("http://xspf.org/ns/0/"));
     if (!data.name.isEmpty())
-        w.writeTextElement(QStringLiteral("title"), data.name);
+        w.writeTextElement(QStringLiteral("title"), replaceLoneSurrogates(data.name));
     w.writeStartElement(QStringLiteral("trackList"));
 
     auto text = [&](const char *name, const QString &v) {
         if (!v.isEmpty())
-            w.writeTextElement(QLatin1String(name), v);
+            w.writeTextElement(QLatin1String(name), replaceLoneSurrogates(v));
     };
     auto meta = [&](const char *key, const QString &v) {
         if (v.isEmpty() || v == QLatin1String("0"))
             return;
         w.writeStartElement(QStringLiteral("meta"));
         w.writeAttribute(QStringLiteral("rel"), kMetaNs + QLatin1String(key));
-        w.writeCharacters(v);
+        w.writeCharacters(replaceLoneSurrogates(v));
         w.writeEndElement();
     };
 
@@ -377,7 +393,7 @@ TrackList parseM3u(const QString &text, const EntryResolver &resolve, QString *n
     TrackList out;
     QString pendingTitle;
     qint64 pendingDuration = 0;
-    const QStringList lines = text.split(QRegularExpression(QStringLiteral("[\r\n]")), Qt::SkipEmptyParts);
+    const QStringList lines = splitLines(text);
     for (const QString &raw : lines) {
         const QString line = raw.trimmed();
         if (line.isEmpty())
@@ -414,7 +430,7 @@ TrackList parsePls(const QString &text, const EntryResolver &resolve)
     QMap<int, Track> byIndex;
     static const QRegularExpression re(QStringLiteral("^(File|Title|Length)(\\d+)\\s*=(.*)$"),
                                        QRegularExpression::CaseInsensitiveOption);
-    for (const QString &raw : text.split(QRegularExpression(QStringLiteral("[\r\n]")), Qt::SkipEmptyParts)) {
+    for (const QString &raw : splitLines(text)) {
         const auto m = re.match(raw.trimmed());
         if (!m.hasMatch())
             continue;
@@ -445,6 +461,11 @@ TrackList parseXspf(const QByteArray &xml, const QString &baseDir, QString *name
 }
 
 TrackList parseXspf(const QByteArray &xml, const EntryResolver &resolve, QString *name)
+{
+    return parseXspfChecked(xml, resolve, name, nullptr);
+}
+
+TrackList parseXspfChecked(const QByteArray &xml, const EntryResolver &resolve, QString *name, QString *error)
 {
     TrackList out;
     QXmlStreamReader r(xml);
@@ -504,6 +525,8 @@ TrackList parseXspf(const QByteArray &xml, const EntryResolver &resolve, QString
             }
         }
     }
+    if (r.hasError() && error)
+        *error = QStringLiteral("line %1: %2").arg(r.lineNumber()).arg(r.errorString());
     return out;
 }
 
@@ -541,7 +564,7 @@ TrackList parseAimppl4(const QString &text, const EntryResolver &resolve, QStrin
 {
     TrackList out;
     enum class Section { None, Summary, Settings, Content } section = Section::None;
-    for (const QString &raw : text.split(QRegularExpression(QStringLiteral("[\r\n]")), Qt::SkipEmptyParts)) {
+    for (const QString &raw : splitLines(text)) {
         const QString line = raw.trimmed();
         if (line.isEmpty())
             continue;
@@ -601,7 +624,7 @@ TrackList parseCue(const QString &text, const QString &cueFile, QString *albumTi
     TrackList tracks;
     Track *cur = nullptr;
 
-    for (const QString &raw : text.split(QRegularExpression(QStringLiteral("[\r\n]")), Qt::SkipEmptyParts)) {
+    for (const QString &raw : splitLines(text)) {
         const QString line = raw.trimmed();
         const int sp = line.indexOf(QLatin1Char(' '));
         const QString cmd = (sp < 0 ? line : line.left(sp)).toUpper();
@@ -700,12 +723,13 @@ bool load(const QString &file, PlaylistData &out, QString *error)
     out.name = QFileInfo(file).completeBaseName();
 
     TrackList tracks;
+    QString damage;
     if (ext == QLatin1String("m3u") || ext == QLatin1String("m3u8"))
         tracks = parseM3u(decodeText(bytes), baseDir, &out.name);
     else if (ext == QLatin1String("pls"))
         tracks = parsePls(decodeText(bytes), baseDir);
     else if (ext == QLatin1String("xspf"))
-        tracks = parseXspf(bytes, baseDir, &out.name);
+        tracks = parseXspfChecked(bytes, localResolver(baseDir), &out.name, &damage);
     else if (ext == QLatin1String("aimppl4"))
         tracks = parseAimppl4(decodeText(bytes), baseDir, &out.name);
     else if (ext == QLatin1String("cue")) {
@@ -722,6 +746,11 @@ bool load(const QString &file, PlaylistData &out, QString *error)
     for (Track &t : out.tracks) {
         if (!t.isUrl())
             t.missing = !QFileInfo::exists(t.path);
+    }
+    if (!damage.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Damaged playlist file (%1)").arg(damage);
+        return false;   // `out` keeps what could be read
     }
     return true;
 }

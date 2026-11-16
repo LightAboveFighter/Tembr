@@ -34,17 +34,29 @@ QString decodeWindows1251(const QByteArray &data)
     return out;
 }
 
+QString replaceLoneSurrogates(QString s)
+{
+    for (qsizetype i = 0; i < s.size(); ++i) {
+        const QChar c = s.at(i);
+        if (c.isHighSurrogate() && i + 1 < s.size() && s.at(i + 1).isLowSurrogate())
+            ++i;   // a valid pair
+        else if (c.isSurrogate())
+            s[i] = QChar::ReplacementCharacter;
+    }
+    return s;
+}
+
 QString decodeText(const QByteArray &data)
 {
     if (data.startsWith("\xEF\xBB\xBF"))
         return QString::fromUtf8(data.mid(3));
     if (data.startsWith("\xFF\xFE")) {
         QStringDecoder dec(QStringDecoder::Utf16LE);
-        return dec.decode(data.mid(2));
+        return replaceLoneSurrogates(dec.decode(data.mid(2)));
     }
     if (data.startsWith("\xFE\xFF")) {
         QStringDecoder dec(QStringDecoder::Utf16BE);
-        return dec.decode(data.mid(2));
+        return replaceLoneSurrogates(dec.decode(data.mid(2)));
     }
 
     QStringDecoder utf8(QStringDecoder::Utf8);

@@ -107,8 +107,8 @@ TrackList collect(const QStringList &paths, const QStringList &excludedIn, QStri
             collectDir(fi.absoluteFilePath(), out, visited, excluded, visitedDirs);
         } else if (PlaylistIO::isPlaylistFile(p)) {
             PlaylistData data;
-            if (PlaylistIO::load(fi.absoluteFilePath(), data))
-                out += data.tracks;
+            PlaylistIO::load(fi.absoluteFilePath(), data);   // a damaged one still gives what could be read
+            out += data.tracks;
         } else if (isAudioFile(p)) {
             out.append(Track::fromPath(fi.absoluteFilePath()));
         }

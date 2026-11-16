@@ -9,3 +9,8 @@
 QString decodeText(const QByteArray &data);
 
 QString decodeWindows1251(const QByteArray &data);
+
+// Replaces UTF-16 surrogates without their pair by U+FFFD. Qt keeps them when
+// decoding UTF-16, and then regular expressions refuse the whole string and
+// QXmlStreamWriter writes broken XML.
+QString replaceLoneSurrogates(QString s);

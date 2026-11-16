@@ -26,6 +26,7 @@
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDialog>
+#include <QDateTime>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -1200,7 +1201,8 @@ void MainWindow::openPlaylists()
         QString error;
         if (!PlaylistIO::load(file, data, &error)) {
             errors << QStringLiteral("%1: %2").arg(QFileInfo(file).fileName(), error);
-            continue;
+            if (data.tracks.isEmpty())
+                continue;   // a damaged file: open what could be read
         }
         // Reuse the current tab if it is empty, as AIMP does with a fresh playlist.
         PlaylistPage *page = currentPage();
@@ -1327,6 +1329,8 @@ void MainWindow::importFromAimp()
         if (!page && i == 0 && currentPage() && !currentPage()->isReadOnly()
             && currentPage()->model()->rowCount() == 0)
             page = currentPage();   // a fresh empty tab
+        if (page && data.tracks.isEmpty() && page->model()->rowCount() > 0)
+            continue;   // nothing read from it: never empty a full tab
         if (!page)
             page = addPage(data.name);
         page->model()->clear();
@@ -1580,14 +1584,31 @@ void MainWindow::restoreSession()
                                                                                        : Qt::AscendingOrder;
 
     createLocalPage();
-    const int count = s.value(QStringLiteral("session/count"), 0).toInt();
-    for (int i = 0; i < count; ++i) {
+    // Every file there, also past session/count: a crash between writing the
+    // files and the count leaves more of them. The next save replaces (and
+    // removes) these files, so one that cannot be read is first kept aside.
+    const QString dir = playlistDir();
+    QStringList unreadable;
+    const QStringList files = QDir(dir).entryList({QStringLiteral("[0-9][0-9][0-9].xspf")}, QDir::Files, QDir::Name);
+    for (int i = 0; i < files.size(); ++i) {
         PlaylistData data;
-        const QString file = QStringLiteral("%1/%2.xspf").arg(playlistDir()).arg(i, 3, 10, QLatin1Char('0'));
-        if (!PlaylistIO::load(file, data))
-            continue;
+        const QString file = dir + QLatin1Char('/') + files[i];
+        if (!PlaylistIO::load(file, data)) {
+            const QString kept = file + QDateTime::currentDateTime().toString(QStringLiteral(".yyyyMMdd-HHmmss")) + QStringLiteral(".damaged");
+            if (QFile::copy(file, kept))
+                unreadable << kept;
+            if (data.tracks.isEmpty())
+                continue;   // what could be read is kept below
+        }
         PlaylistPage *page = addPage(data.name.isEmpty() ? QStringLiteral("Плейлист %1").arg(i + 1) : data.name);
         page->model()->insertTracks(-1, data.tracks);
+    }
+    if (!unreadable.isEmpty()) {
+        QTimer::singleShot(0, this, [this, unreadable] {
+            QMessageBox::warning(this, windowTitle(),
+                                 QStringLiteral("Не удалось прочитать плейлисты прошлого сеанса полностью. Копии файлов сохранены:\n\n")
+                                     + unreadable.join(QLatin1Char('\n')));
+        });
     }
     if (m_tabs->count() == 1)
         addPage(QStringLiteral("Плейлист 1"));
