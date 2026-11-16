@@ -7,12 +7,15 @@
 #include "core/LocalFiles.h"
 #include "core/SessionFiles.h"
 #include "ui/MainWindow.h"
+#include "ui/PlaylistFilterProxy.h"
 #include "ui/PlaylistModel.h"
 #include "ui/PlaylistPage.h"
 
 #include <QApplication>
 #include <QCryptographicHash>
 #include <QDirIterator>
+#include <QHeaderView>
+#include <QLineEdit>
 #include <QSemaphore>
 #include <QSettings>
 #include <QSignalSpy>
@@ -291,6 +294,114 @@ private slots:
         PlaylistModel *model = pageAt(w, 0)->model();
         QCOMPARE(model->rowCount(), 1);
         QCOMPARE(model->track(0).uid, uid);
+    }
+
+    // Playing from the window: Space plays the row in focus, a double click
+    // or Enter on a row plays it, Enter in the search box the first match;
+    // the window title shows the track.
+    void playFromTheWindow()
+    {
+        SessionSnapshot snap;
+        PlaylistData a = playlist(QStringLiteral("A"), {audio(QStringLiteral("w0.wav")), audio(QStringLiteral("w1.wav")),
+                                                        audio(QStringLiteral("w2.wav")), audio(QStringLiteral("w3.wav"))});
+        a.tracks[2].title = QStringLiteral("Needle");
+        snap.playlists = {a};
+        QSettings s;
+        s.setValue(QStringLiteral("session/version"), 2);
+        s.setValue(QStringLiteral("session/localTab"), 0);
+        s.setValue(QStringLiteral("session/current"), 1);
+        s.sync();
+
+        MainWindow w(options([snap] { return snap; }));
+        QSignalSpy loaded(&w, &MainWindow::sessionLoaded);
+        w.show();
+        QVERIFY(loaded.wait(10000));
+        w.activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(&w));
+        auto *engine = w.findChild<AudioEngine *>();
+        PlaylistPage *page = pageAt(w, 1);
+        PlaylistModel *model = page->model();
+        PlaylistView *view = page->view();
+
+        view->setFocus();
+        view->setCurrentIndex(page->proxy()->index(1, PlaylistModel::ColTitle));
+        QTest::keyClick(view, Qt::Key_Space);
+        QCOMPARE(model->currentRow(), 1);
+        QCOMPARE(engine->state(), AudioEngine::State::Playing);
+        QCOMPARE(w.windowTitle(), model->track(1).displayTitle() + QStringLiteral(" — Tembr"));
+        QTest::keyClick(view, Qt::Key_Space);   // pause, not another row
+        QCOMPARE(engine->state(), AudioEngine::State::Paused);
+
+        const QRect row3 = view->visualRect(page->proxy()->index(3, PlaylistModel::ColTitle));
+        // As a real double click comes: press, release, then the double click.
+        QTest::mouseClick(view->viewport(), Qt::LeftButton, {}, row3.center());
+        QTest::mouseDClick(view->viewport(), Qt::LeftButton, {}, row3.center());
+        QCOMPARE(model->currentRow(), 3);
+        QCOMPARE(engine->state(), AudioEngine::State::Playing);
+
+        view->setCurrentIndex(page->proxy()->index(0, PlaylistModel::ColTitle));
+        QTest::keyClick(view, Qt::Key_Return);
+        QCOMPARE(model->currentRow(), 0);
+
+        auto *search = w.findChild<QLineEdit *>();
+        search->setFocus();
+        QTest::keyClicks(search, QStringLiteral("needle"));
+        QTRY_COMPARE(page->proxy()->rowCount(), 1);
+        QTest::keyClick(search, Qt::Key_Return);
+        QCOMPARE(model->currentRow(), 2);
+        QCOMPARE(w.windowTitle(), QStringLiteral("Needle — Tembr"));
+        w.handleCommand(QStringLiteral("stop"));
+        QCOMPARE(engine->state(), AudioEngine::State::Stopped);
+    }
+
+    // Commands from MPRIS, the tray and `tembr --next`; the session saved on
+    // close keeps the playlist and row that played.
+    void commandsAndSavedPlayingTrack()
+    {
+        SessionSnapshot snap;
+        snap.playlists = {playlist(QStringLiteral("A"), {audio(QStringLiteral("c0.wav")), audio(QStringLiteral("c1.wav")),
+                                                         audio(QStringLiteral("c2.wav"))})};
+        QSettings s;
+        s.setValue(QStringLiteral("session/version"), 2);
+        s.setValue(QStringLiteral("session/localTab"), 0);
+        s.setValue(QStringLiteral("session/current"), 1);
+        s.setValue(QStringLiteral("volume"), 97);
+        s.sync();
+
+        {
+            MainWindow w(options([snap] { return snap; }));
+            QSignalSpy loaded(&w, &MainWindow::sessionLoaded);
+            QVERIFY(loaded.wait(10000));
+            auto *engine = w.findChild<AudioEngine *>();
+            PlaylistModel *model = pageAt(w, 1)->model();
+
+            w.handleCommand(QStringLiteral("play"));   // not the active window: the first row
+            QCOMPARE(model->currentRow(), 0);
+            QCOMPARE(engine->state(), AudioEngine::State::Playing);
+            w.handleCommand(QStringLiteral("play"));   // already playing: stays so
+            QCOMPARE(engine->state(), AudioEngine::State::Playing);
+            w.handleCommand(QStringLiteral("next"));
+            w.handleCommand(QStringLiteral("next"));
+            QCOMPARE(model->currentRow(), 2);
+            w.handleCommand(QStringLiteral("previous"));
+            QCOMPARE(model->currentRow(), 1);
+            w.handleCommand(QStringLiteral("pause"));
+            QCOMPARE(engine->state(), AudioEngine::State::Paused);
+            w.handleCommand(QStringLiteral("play-pause"));
+            QCOMPARE(engine->state(), AudioEngine::State::Playing);
+            w.handleCommand(QStringLiteral("volume-up"));
+            QVERIFY(qAbs(engine->volume() - 1.0f) < 0.001f);   // 97 + 5, at most 100
+            w.handleCommand(QStringLiteral("volume-down"));
+            QVERIFY(qAbs(engine->volume() - 0.95f) < 0.001f);
+            w.handleCommand(QStringLiteral("stop"));
+            QCOMPARE(engine->state(), AudioEngine::State::Stopped);
+            w.close();   // saves
+        }
+        QSettings saved;
+        QCOMPARE(saved.value(QStringLiteral("session/playingTab")).toInt(), 1);
+        QCOMPARE(saved.value(QStringLiteral("session/playingRow")).toInt(), 1);
+        QCOMPARE(saved.value(QStringLiteral("volume")).toInt(), 95);
+        QCOMPARE(SessionFiles::load(playlistDir()).playlists.size(), 1);
     }
 
     // Closed before the playlists were read: nothing is written. A save then

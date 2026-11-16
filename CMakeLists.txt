@@ -78,6 +78,8 @@ add_library(tembr_ui STATIC
     src/ui/DeleteFilesDialog.h src/ui/DeleteFilesDialog.cpp
     src/ui/LocalFilesDialog.h src/ui/LocalFilesDialog.cpp
     src/ui/MigrationDialog.h src/ui/MigrationDialog.cpp
+    src/ui/PlaybackController.h src/ui/PlaybackController.cpp
+    src/ui/TransportBar.h src/ui/TransportBar.cpp
 )
 target_link_libraries(tembr_ui PUBLIC tembr_core Qt6::Widgets)
 
@@ -130,6 +132,16 @@ if(TEMBR_BUILD_TESTS)
     target_link_libraries(test_playlistpage PRIVATE tembr_core Qt6::Widgets Qt6::Test)
     add_test(NAME test_playlistpage COMMAND test_playlistpage)
     set_tests_properties(test_playlistpage PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    add_executable(test_playbackcontroller tests/test_playbackcontroller.cpp tests/TestAudio.h)
+    target_link_libraries(test_playbackcontroller PRIVATE tembr_ui Qt6::Test)
+    add_test(NAME test_playbackcontroller COMMAND test_playbackcontroller)
+    set_tests_properties(test_playbackcontroller PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;TEMBR_AUDIO_BACKEND=null")
+
+    add_executable(test_transportbar tests/test_transportbar.cpp tests/TestAudio.h)
+    target_link_libraries(test_transportbar PRIVATE tembr_ui Qt6::Test)
+    add_test(NAME test_transportbar COMMAND test_transportbar)
+    set_tests_properties(test_transportbar PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;TEMBR_AUDIO_BACKEND=null")
 
     add_executable(test_mainwindow tests/test_mainwindow.cpp tests/TestAudio.h)
     target_link_libraries(test_mainwindow PRIVATE tembr_ui Qt6::Test)

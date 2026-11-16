@@ -18,15 +18,16 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QMenu;
-class QSlider;
 class QSplitter;
 class QSystemTrayIcon;
 class QTabWidget;
-class QToolButton;
 class LocalFiles;
 class MprisService;
 class NowPlayingPanel;
+class PlaybackController;
+class PlaylistModel;
 class TrackOsd;
+class TransportBar;
 class PlaylistPage;
 
 // What is read from disk at startup, on a worker thread.
@@ -97,13 +98,9 @@ private:
     void closePage(int index);
     void renamePage(int index);
 
-    void playRow(PlaylistPage *page, int row, bool start = true);   // start = false: load only
+    // Play/pause; stopped: the row in focus, else the current track, else the first one.
     void playOrResume();
-    void trackLoaded();
-    void trackLoadFailed(const QString &error, bool wasPlaying);
-    void playNext();
-    void playPrevious();
-    void changeVolume(int delta);
+    PlaylistPage *pageOf(PlaylistModel *model) const;
     void showTrackInfo();
     void updateNowPlaying();
     void loadCover(const Track &t);
@@ -144,10 +141,10 @@ private:
     QList<QPointer<QAction>> m_needSession;   // menu items that work on playlists
 
     AudioEngine *m_engine;
+    PlaybackController *m_playback;   // what plays; the window shows it
     MprisService *m_mpris;
     LocalFiles *m_localFiles;
     PlaylistPage *m_localPage = nullptr;   // "Local files": read-only, follows the music folders
-    QPointer<PlaylistPage> m_playingPage;
     AppSettings m_settings;
     bool m_quitting = false;
 
@@ -156,13 +153,8 @@ private:
     QTabWidget *m_tabs = nullptr;
     QLineEdit *m_search = nullptr;
     QComboBox *m_searchField = nullptr;
-    QSlider *m_seek = nullptr;
-    QSlider *m_volume = nullptr;
-    QLabel *m_position = nullptr;
-    QLabel *m_duration = nullptr;
-    QLabel *m_volumeIcon = nullptr;
+    TransportBar *m_transport = nullptr;
     QLabel *m_stats = nullptr;
-    QToolButton *m_playButton = nullptr;
 
     QAction *m_actPlay = nullptr;
     QAction *m_actStop = nullptr;
@@ -186,7 +178,6 @@ private:
     QImage m_coverImage;
     QString m_artFile;          // cover exported for MPRIS clients
     int m_coverJob = 0;         // the cover read last; older results are dropped
-    int m_failStreak = 0;       // consecutive unplayable tracks skipped
     QFuture<QStringList> m_saveJob;   // autosave being written
     QFuture<QString> m_hotkeyJob;   // background registration at startup
     bool m_hotkeysReleased = false;
