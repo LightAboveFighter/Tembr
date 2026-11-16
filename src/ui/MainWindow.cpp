@@ -14,10 +14,12 @@
 #include "ui/LocalFilesDialog.h"
 #include "ui/MigrationDialog.h"
 #include "ui/NowPlayingPanel.h"
+#include "ui/PlaybackController.h"
 #include "ui/PlaylistFilterProxy.h"
 #include "ui/PlaylistModel.h"
 #include "ui/PlaylistPage.h"
 #include "ui/Theme.h"
+#include "ui/TransportBar.h"
 #include "ui/TrackOsd.h"
 #include "ui/TrackInfoDialog.h"
 
@@ -42,7 +44,6 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
-#include <QSlider>
 #include <QSplitter>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -50,7 +51,6 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTimer>
-#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QtConcurrent>
@@ -116,6 +116,7 @@ MainWindow::MainWindow(const MainWindowOptions &options, QWidget *parent)
     : QMainWindow(parent)
     , m_options(options)
     , m_engine(new AudioEngine(this))
+    , m_playback(new PlaybackController(m_engine, this))
     , m_mpris(new MprisService(m_engine, this))
     , m_localFiles(new LocalFiles(this))
     , m_osd(new TrackOsd)
@@ -126,35 +127,38 @@ MainWindow::MainWindow(const MainWindowOptions &options, QWidget *parent)
     buildActions();
     buildUi();
 
-    connect(m_engine, &AudioEngine::stateChanged, this, [this](AudioEngine::State s) {
-        refreshIcons();
-        m_actPlay->setText(s == AudioEngine::State::Playing ? QStringLiteral("Пауза") : QStringLiteral("Воспроизвести"));
-        if (m_playingPage)
-            m_playingPage->model()->setPaused(s == AudioEngine::State::Paused);
-    });
-    connect(m_engine, &AudioEngine::positionChanged, this, [this](qint64 ms) {
-        if (!m_seek->isSliderDown()) {
-            m_seek->setValue(int(ms));
-            m_position->setText(formatDuration(ms + 1));
-        }
-    });
-    connect(m_engine, &AudioEngine::durationChanged, this, [this](qint64 ms) {
-        m_seek->setRange(0, int(ms));
-        m_seek->setEnabled(m_engine->isSeekable());
-        m_duration->setText(formatDuration(ms + 1));
-    });
-    connect(m_engine, &AudioEngine::finished, this, &MainWindow::playNext);
-    connect(m_engine, &AudioEngine::loaded, this, &MainWindow::trackLoaded);
-    connect(m_engine, &AudioEngine::loadFailed, this, &MainWindow::trackLoadFailed);
     connect(m_engine, &AudioEngine::errorOccurred, this,
             [this](const QString &msg) { statusBar()->showMessage(msg, 5000); });
+
+    // What plays is decided by m_playback; the window shows it.
+    connect(m_playback, &PlaybackController::currentChanged, this, &MainWindow::updateNowPlaying);
+    connect(m_playback, &PlaybackController::navigationChanged, this, &MainWindow::updateNavigation);
+    connect(m_playback, &PlaybackController::message, this,
+            [this](const QString &text) { statusBar()->showMessage(text, 5000); });
+    connect(m_playback, &PlaybackController::trackStarted, this, [this](const Track &t) {
+        // The title on screen when it cannot be seen in the window (AIMP's OSD).
+        if (TrackOsd::wanted(m_settings.osd.when, isMinimized(), isVisible(), isActiveWindow()))
+            m_osd->showTrack(t);
+    });
+    connect(m_playback, &PlaybackController::trackOpened, this,
+            [this](const Track &t) { m_osd->refresh(t, m_engine->durationMs()); });   // the length, if the tags had none
+    connect(m_playback, &PlaybackController::currentTagsChanged, this, [this] {
+        updateNowPlaying();
+        if (const Track *t = m_playback->currentTrack())
+            m_osd->refresh(*t, m_engine->durationMs());   // tags just read
+    });
+    connect(m_playback, &PlaybackController::followRow, this, [this](PlaylistModel *model, int row) {
+        if (PlaylistPage *page = pageOf(model))
+            page->scrollToSourceRow(row);
+    });
+    connect(m_playback, &PlaybackController::volumeChanged, this, [this](int v) { m_mpris->setVolume(v / 100.0); });
 
     // MPRIS: GNOME notification list, media keys, `tembr --next`, second instances.
     connect(m_mpris, &MprisService::commandRequested, this, &MainWindow::handleCommand);
     connect(m_mpris, &MprisService::raiseRequested, this, &MainWindow::showAndRaise);
     connect(m_mpris, &MprisService::quitRequested, this, &MainWindow::quit);
     connect(m_mpris, &MprisService::seekRequested, m_engine, &AudioEngine::seek);
-    connect(m_mpris, &MprisService::volumeRequested, this, [this](double v) { m_volume->setValue(qRound(v * 100)); });
+    connect(m_mpris, &MprisService::volumeRequested, this, [this](double v) { m_playback->setVolume(qRound(v * 100)); });
     connect(m_mpris, &MprisService::openRequested, this, [this](const QStringList &paths) {
         showAndRaise();
         openPaths(paths);
@@ -222,7 +226,7 @@ void MainWindow::buildActions()
 
     connect(m_actPrev, &QAction::triggered, this, [this] { handleCommand(QStringLiteral("previous")); });
     connect(m_actPlay, &QAction::triggered, this, [this] { handleCommand(QStringLiteral("play-pause")); });
-    connect(m_actStop, &QAction::triggered, m_engine, &AudioEngine::stop);
+    connect(m_actStop, &QAction::triggered, this, [this] { handleCommand(QStringLiteral("stop")); });
     connect(m_actNext, &QAction::triggered, this, [this] { handleCommand(QStringLiteral("next")); });
     connect(m_actShow, &QAction::triggered, this, &MainWindow::toggleVisible);
     connect(m_actQuit, &QAction::triggered, this, &MainWindow::quit);
@@ -295,8 +299,8 @@ void MainWindow::buildActions()
             [this] { m_engine->seek(m_engine->positionMs() + 5000); });
     addItem(pb, QStringLiteral("Назад на 5 с"), QKeySequence(QStringLiteral("Ctrl+Left")), this,
             [this] { m_engine->seek(m_engine->positionMs() - 5000); });
-    addItem(pb, QStringLiteral("Громче"), QKeySequence(QStringLiteral("Ctrl+Up")), this, [this] { changeVolume(5); });
-    addItem(pb, QStringLiteral("Тише"), QKeySequence(QStringLiteral("Ctrl+Down")), this, [this] { changeVolume(-5); });
+    addItem(pb, QStringLiteral("Громче"), QKeySequence(QStringLiteral("Ctrl+Up")), this, [this] { m_playback->changeVolume(5); });
+    addItem(pb, QStringLiteral("Тише"), QKeySequence(QStringLiteral("Ctrl+Down")), this, [this] { m_playback->changeVolume(-5); });
 }
 
 void MainWindow::buildUi()
@@ -337,7 +341,7 @@ void MainWindow::buildUi()
     connect(m_search, &QLineEdit::returnPressed, this, [this] {
         // Enter in the search box plays the first match.
         if (auto *p = currentPage(); p && p->proxy()->rowCount() > 0)
-            playRow(p, p->proxy()->mapToSource(p->proxy()->index(0, 0)).row());
+            m_playback->playRow(p->model(), p->proxy()->mapToSource(p->proxy()->index(0, 0)).row());
     });
 
     m_tabs = new QTabWidget;
@@ -368,64 +372,14 @@ void MainWindow::buildUi()
     m_splitter->setSizes({300, 900});
 
     // --- Bottom: transport bar
-    auto *bar = new QWidget;
-    bar->setObjectName(QStringLiteral("TransportBar"));
-    bar->setAttribute(Qt::WA_StyledBackground);
-    auto *controls = new QHBoxLayout(bar);
-    controls->setContentsMargins(12, 8, 14, 8);
-    controls->setSpacing(6);
-    auto makeButton = [&](QAction *a, int iconSize) {
-        auto *b = new QToolButton;
-        b->setDefaultAction(a);
-        b->setAutoRaise(true);
-        b->setIconSize(QSize(iconSize, iconSize));
-        b->setFocusPolicy(Qt::NoFocus);
-        controls->addWidget(b);
-        return b;
-    };
-    makeButton(m_actPrev, 22);
-    m_playButton = makeButton(m_actPlay, 42);
-    makeButton(m_actNext, 22);
-    makeButton(m_actStop, 20);
-    controls->addSpacing(10);
-
-    m_position = new QLabel(QStringLiteral("0:00"));
-    m_duration = new QLabel(QStringLiteral("0:00"));
-    for (QLabel *l : {m_position, m_duration}) {
-        l->setObjectName(QStringLiteral("TimeLabel"));
-        l->setMinimumWidth(l->fontMetrics().horizontalAdvance(QStringLiteral("00:00:00")));
-    }
-    m_position->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    m_seek = new QSlider(Qt::Horizontal);
-    m_seek->setEnabled(false);
-    m_seek->setFocusPolicy(Qt::NoFocus);
-    controls->addWidget(m_position);
-    controls->addWidget(m_seek, 1);
-    controls->addWidget(m_duration);
-    controls->addSpacing(10);
-
-    m_volumeIcon = new QLabel;
-    m_volume = new QSlider(Qt::Horizontal);
-    m_volume->setRange(0, 100);
-    m_volume->setFixedWidth(120);
-    m_volume->setFocusPolicy(Qt::NoFocus);
-    controls->addWidget(m_volumeIcon);
-    controls->addWidget(m_volume);
-
-    connect(m_seek, &QSlider::sliderReleased, this, [this] { m_engine->seek(m_seek->value()); });
-    connect(m_seek, &QSlider::sliderMoved, this, [this](int v) { m_position->setText(formatDuration(v + 1)); });
-    connect(m_volume, &QSlider::valueChanged, this, [this](int v) {
-        m_engine->setVolume(v / 100.0f);
-        m_mpris->setVolume(v / 100.0);
-        m_volume->setToolTip(QStringLiteral("Громкость: %1%").arg(v));
-    });
+    m_transport = new TransportBar(m_playback, {m_actPrev, m_actPlay, m_actNext, m_actStop});
 
     auto *central = new QWidget;
     auto *root = new QVBoxLayout(central);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
     root->addWidget(m_splitter, 1);
-    root->addWidget(bar);
+    root->addWidget(m_transport);
     setCentralWidget(central);
 
     m_stats = new QLabel;
@@ -439,13 +393,7 @@ void MainWindow::buildUi()
 
 void MainWindow::refreshIcons()
 {
-    const QColor c = Theme::iconColor();
-    const bool playing = m_engine->state() == AudioEngine::State::Playing;
-    m_actPrev->setIcon(Icons::make(Icons::Kind::Previous, c));
-    m_actNext->setIcon(Icons::make(Icons::Kind::Next, c));
-    m_actStop->setIcon(Icons::make(Icons::Kind::Stop, c));
-    m_actPlay->setIcon(Icons::accentButton(playing ? Icons::Kind::Pause : Icons::Kind::Play));
-    m_volumeIcon->setPixmap(Icons::make(Icons::Kind::Volume, c).pixmap(18, 18));
+    m_transport->refreshIcons();
     setWindowIcon(Icons::app());
 }
 
@@ -591,23 +539,24 @@ void MainWindow::handleCommand(const QString &command)
         m_pendingCommands << command;
         return;
     }
+    PlaylistModel *fallback = currentPage() ? currentPage()->model() : nullptr;   // when nothing plays
     if (command == QLatin1String("play-pause"))
         playOrResume();
     else if (command == QLatin1String("play")) {
         if (m_engine->state() != AudioEngine::State::Playing)
             playOrResume();
     } else if (command == QLatin1String("pause"))
-        m_engine->pause();
+        m_playback->pause();
     else if (command == QLatin1String("stop"))
-        m_engine->stop();
+        m_playback->stop();
     else if (command == QLatin1String("next"))
-        playNext();
+        m_playback->next(fallback);
     else if (command == QLatin1String("previous"))
-        playPrevious();
+        m_playback->previous(fallback);
     else if (command == QLatin1String("volume-up"))
-        changeVolume(5);
+        m_playback->changeVolume(5);
     else if (command == QLatin1String("volume-down"))
-        changeVolume(-5);
+        m_playback->changeVolume(-5);
     else if (command == QLatin1String("show"))
         showAndRaise();
 }
@@ -634,10 +583,10 @@ PlaylistPage *MainWindow::addPage(const QString &name)
     page->view()->horizontalHeader()->setSortIndicatorShown(false);
     m_tabs->addTab(page, name);
 
-    connect(page, &PlaylistPage::trackActivated, this, [this, page](int row) { playRow(page, row); });
+    connect(page, &PlaylistPage::trackActivated, this, [this, page](int row) { m_playback->playRow(page->model(), row); });
     connect(page, &PlaylistPage::tracksAdded, this, [this, page](int row, bool playFirst) {
         if (playFirst)
-            playRow(page, row);
+            m_playback->playRow(page->model(), row);
     });
     // Ordinary playlists are saved soon after they change (also when sorted).
     const auto changed = [this, page] {
@@ -649,30 +598,12 @@ PlaylistPage *MainWindow::addPage(const QString &name)
     connect(page, &PlaylistPage::statsChanged, this, [this, page] {
         if (page == currentPage())
             updateStats();
-        if (page == m_playingPage)
+        if (page->model() == m_playback->playingModel())
             updateNavigation();
     });
     connect(page, &PlaylistPage::contextMenuRequested, this, &MainWindow::showContextMenu);
     connect(page->view()->horizontalHeader(), &QWidget::customContextMenuRequested, this,
             [this, page](const QPoint &p) { showHeaderMenu(page->view()->horizontalHeader()->mapToGlobal(p)); });
-    connect(page->model(), &PlaylistModel::currentDetached, this, [this, page] {
-        if (page != m_playingPage)
-            return;
-        if (m_engine->state() == AudioEngine::State::Stopped) {
-            page->model()->setCurrent(0);   // nothing playing: nothing to go on from
-            updateNowPlaying();
-        } else {
-            updateNavigation();   // plays on, shown as before; "next" is decided by the model
-        }
-    });
-    connect(page->model(), &QAbstractItemModel::dataChanged, this,
-            [this, page](const QModelIndex &tl, const QModelIndex &br) {
-                const int cur = page->model()->currentRow();
-                if (page == m_playingPage && cur >= tl.row() && cur <= br.row()) {
-                    updateNowPlaying();
-                    m_osd->refresh(page->model()->track(cur), m_engine->durationMs());   // tags just read
-                }
-            });
     return page;
 }
 
@@ -691,11 +622,7 @@ void MainWindow::closePage(int index)
             return;
     }
 
-    if (page == m_playingPage) {
-        m_engine->unload();
-        m_playingPage = nullptr;
-        updateNowPlaying();
-    }
+    m_playback->release(page->model());
     m_tabs->removeTab(index);
     scheduleSave();
     page->deleteLater();
@@ -833,7 +760,7 @@ void MainWindow::applyLocalScan(const TrackList &found, int sortGeneration)
         if (idx.isValid())
             view->scrollTo(idx, QAbstractItemView::PositionAtTop);
     }
-    if (m_localPage == m_playingPage)
+    if (m_localPage->model() == m_playback->playingModel())
         updateNowPlaying();
     updateStats();
 }
@@ -852,127 +779,35 @@ void MainWindow::showLocalFilesSettings()
 
 // --- Playback ----------------------------------------------------------------
 
-void MainWindow::playRow(PlaylistPage *page, int row, bool start)
-{
-    if (!page || row < 0 || row >= page->model()->rowCount())
-        return;
-    const Track t = page->model()->track(row);
-
-    if (m_playingPage && m_playingPage != page)
-        m_playingPage->model()->setCurrent(0);
-    m_playingPage = page;
-    page->model()->setCurrent(t.uid);
-
-    // Opens in the background: trackLoaded() or trackLoadFailed() follows.
-    m_engine->load(t.path, t.startMs, t.endMs);
-    if (start)
-        m_engine->play();   // starts as soon as the file is open
-    updateNowPlaying();
-    // The title on screen when it cannot be seen in the window (AIMP's OSD).
-    if (TrackOsd::wanted(m_settings.osd.when, isMinimized(), isVisible(), isActiveWindow()))
-        m_osd->showTrack(t);
-}
-
-void MainWindow::trackLoaded()
-{
-    m_failStreak = 0;
-    if (!m_playingPage)
-        return;
-    PlaylistModel *model = m_playingPage->model();
-    const int row = model->currentRow();
-    if (row < 0)
-        return;
-    model->setMissing(row, false);
-    m_osd->refresh(model->track(row), m_engine->durationMs());   // the length, if the tags had none
-}
-
-void MainWindow::trackLoadFailed(const QString &error, bool wasPlaying)
-{
-    PlaylistModel *model = m_playingPage ? m_playingPage->model() : nullptr;
-    const int row = model ? model->currentRow() : -1;
-    if (row >= 0) {
-        model->setMissing(row, true);
-        statusBar()->showMessage(QStringLiteral("%1: %2").arg(model->track(row).fileName(), error), 5000);
-    } else {
-        statusBar()->showMessage(error, 5000);
-    }
-    // Skip to the next track, but don't spin through a playlist of dead files,
-    // and not when the user stopped or paused while it was opening.
-    if (model && wasPlaying && ++m_failStreak < model->rowCount())
-        QTimer::singleShot(0, this, &MainWindow::playNext);
-    else
-        m_failStreak = 0;
-    updateNowPlaying();
-}
-
 void MainWindow::playOrResume()
 {
-    switch (m_engine->state()) {
-    case AudioEngine::State::Playing:
-        m_engine->pause();
+    if (m_playback->pauseOrResume())
         return;
-    case AudioEngine::State::Paused:
-        m_engine->play();
-        return;
-    case AudioEngine::State::Stopped:
-        break;
-    }
-
+    // Stopped: what to start is what the user looks at.
     PlaylistPage *page = currentPage();
     if (!page)
         return;
+    PlaylistModel *model = page->model();
     // From the tray/media keys the selection is not what the user means.
     int row = isActiveWindow() ? page->focusedSourceRow() : -1;
-    if (row < 0 && m_playingPage && m_playingPage->model()->currentRow() >= 0) {
-        page = m_playingPage;
-        row = page->model()->currentRow();
+    if (PlaylistModel *playing = m_playback->playingModel(); row < 0 && playing && playing->currentRow() >= 0) {
+        model = playing;
+        row = playing->currentRow();
     }
     if (row < 0 && page->proxy()->rowCount() > 0)
         row = page->proxy()->mapToSource(page->proxy()->index(0, 0)).row();
-    playRow(page, row);
+    m_playback->playRow(model, row);
 }
 
-void MainWindow::playNext()
+PlaylistPage *MainWindow::pageOf(PlaylistModel *model) const
 {
-    PlaylistPage *page = m_playingPage ? m_playingPage.data() : currentPage();
-    if (!page)
-        return;
-    PlaylistModel *model = page->model();
-    // Also from a track whose row has gone (deleted): see PlaylistModel::nextRow().
-    const int next = model->currentUid() ? model->nextRow() : (model->rowCount() > 0 ? 0 : -1);
-    if (next < 0) {
-        m_engine->stop();   // end of playlist
-        return;
-    }
-    playRow(page, next);
-    page->scrollToSourceRow(next);
-}
-
-void MainWindow::playPrevious()
-{
-    if (m_engine->positionMs() > 3000) {
-        m_engine->seek(0);
-        return;
-    }
-    PlaylistPage *page = m_playingPage ? m_playingPage.data() : currentPage();
-    if (!page)
-        return;
-    const int prev = page->model()->currentUid() ? page->model()->previousRow() : -1;
-    if (prev >= 0) {
-        playRow(page, prev);
-        page->scrollToSourceRow(prev);
-    }
-}
-
-void MainWindow::changeVolume(int delta)
-{
-    m_volume->setValue(qBound(0, m_volume->value() + delta, 100));
+    return model ? qobject_cast<PlaylistPage *>(model->parent()) : nullptr;
 }
 
 void MainWindow::updateNowPlaying()
 {
     // Also a track whose row is gone: it plays on, so it is still shown.
-    const Track *current = m_playingPage ? m_playingPage->model()->currentTrack() : nullptr;
+    const Track *current = m_playback->currentTrack();
     if (!current) {
         m_nowPlaying->clear();
         m_coverPath.clear();
@@ -1043,7 +878,7 @@ void MainWindow::setCover(int job, const QImage &image, const QString &artFile)
         QFile::remove(m_artFile);
     m_artFile = artFile;
     m_coverImage = image;
-    if (const Track *current = m_playingPage ? m_playingPage->model()->currentTrack() : nullptr) {
+    if (const Track *current = m_playback->currentTrack()) {
         m_nowPlaying->showTrack(*current, m_coverImage);
         m_mpris->setTrack(current, m_artFile);
     }
@@ -1051,12 +886,8 @@ void MainWindow::setCover(int job, const QImage &image, const QString &artFile)
 
 void MainWindow::updateNavigation()
 {
-    PlaylistModel *model = m_playingPage ? m_playingPage->model() : nullptr;
-    if (model && model->currentUid()) {
-        m_mpris->setNavigation(model->nextRow() >= 0, model->previousRow() >= 0);
-        return;
-    }
-    m_mpris->setNavigation(currentPage() && currentPage()->model()->rowCount() > 0, false);
+    PlaylistModel *fallback = currentPage() ? currentPage()->model() : nullptr;
+    m_mpris->setNavigation(m_playback->hasNext(fallback), m_playback->hasPrevious());
 }
 
 // --- Playlist helpers ----------------------------------------------------------
@@ -1095,7 +926,7 @@ void MainWindow::showTrackInfo()
     if (!page)
         return;
     int row = page->focusedSourceRow();
-    if (row < 0 && page == m_playingPage)
+    if (row < 0 && page->model() == m_playback->playingModel())
         row = page->model()->currentRow();
     if (row < 0)
         return;
@@ -1112,7 +943,7 @@ void MainWindow::showContextMenu(const QPoint &globalPos)
     QMenu menu(this);
     if (row >= 0) {
         menu.addAction(Icons::make(Icons::Kind::Play, Theme::iconColor()), QStringLiteral("Воспроизвести"), this,
-                       [this, page, row] { playRow(page, row); });
+                       [this, page, row] { m_playback->playRow(page->model(), row); });
         menu.addAction(QStringLiteral("Информация о треке…"), this, &MainWindow::showTrackInfo);
         const Track &t = page->model()->track(row);
         if (!t.isUrl()) {
@@ -1385,12 +1216,8 @@ void MainWindow::importFromAimp()
         // Continue where AIMP was, without starting playback.
         if (i == r.playingIndex && r.playingRow >= 0 && r.playingRow < page->model()->rowCount()
             && m_engine->state() == AudioEngine::State::Stopped) {
-            if (m_playingPage && m_playingPage != page)
-                m_playingPage->model()->setCurrent(0);
-            m_playingPage = page;
-            page->model()->setCurrent(page->model()->track(r.playingRow).uid);
+            m_playback->setCurrent(page->model(), r.playingRow);
             page->scrollToSourceRow(r.playingRow);
-            updateNowPlaying();
         }
     }
     if (PlaylistPage *show = active ? active : first)
@@ -1470,7 +1297,7 @@ void MainWindow::forgetDeletedFiles(PlaylistPage *from, const QStringList &paths
     if (paths.isEmpty())
         return;
     const QSet<QString> gone(paths.cbegin(), paths.cend());
-    const Track *playing = m_playingPage ? m_playingPage->model()->currentTrack() : nullptr;
+    const Track *playing = m_playback->currentTrack();
     const bool playingGone = playing && gone.contains(playing->path);
 
     for (int i = 0; i < m_tabs->count(); ++i) {
@@ -1491,27 +1318,8 @@ void MainWindow::forgetDeletedFiles(PlaylistPage *from, const QStringList &paths
         }
     }
 
-    if (playingGone && m_playingPage) {
-        PlaylistModel *model = m_playingPage->model();
-        int next = -1;
-        if (model->isCurrentDetached()) {
-            next = model->nextRow();   // its row was removed: the first survivor after it
-        } else {
-            for (int row = model->currentRow() + 1; row < model->rowCount() && next < 0; ++row) {
-                if (!gone.contains(model->track(row).path))
-                    next = row;   // still listed (Local files, marked missing): skip deleted ones
-            }
-        }
-        const AudioEngine::State state = m_engine->state();
-        if (next >= 0 && state != AudioEngine::State::Stopped) {
-            playRow(m_playingPage, next, state == AudioEngine::State::Playing);   // paused: stays stopped there
-            m_playingPage->scrollToSourceRow(next);
-        } else if (next < 0) {
-            m_engine->stop();   // nothing after it
-            model->setCurrent(0);
-            updateNowPlaying();
-        }
-    }
+    if (playingGone)
+        m_playback->skipDeleted(gone);
 
     rescanLocal();   // at once, not after the watcher's delay
     updateStats();
@@ -1565,7 +1373,7 @@ void MainWindow::saveSession(SaveScope scope)
     QList<PlaylistData> playlists;
     for (int i = 0; i < m_tabs->count(); ++i) {
         auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(i));
-        if (page == m_playingPage)
+        if (page->model() == m_playback->playingModel())
             playingTab = i;
         if (page != m_localPage)
             playlists.append({page->model()->name(), page->model()->tracks()});
@@ -1602,11 +1410,11 @@ void MainWindow::saveSession(SaveScope scope)
     s.setValue(QStringLiteral("session/localTab"), m_tabs->indexOf(m_localPage));
     s.setValue(QStringLiteral("session/current"), m_tabs->currentIndex());
     s.setValue(QStringLiteral("session/playingTab"), playingTab);
-    s.setValue(QStringLiteral("session/playingRow"), m_playingPage ? m_playingPage->model()->currentRow() : -1);
+    s.setValue(QStringLiteral("session/playingRow"), m_playback->playingModel() ? m_playback->playingModel()->currentRow() : -1);
     // Rows of Local files change with the folders: remember the file.
-    const Track *playing = m_playingPage ? m_playingPage->model()->currentTrack() : nullptr;
+    const Track *playing = m_playback->currentTrack();
     s.setValue(QStringLiteral("session/playingPath"), playing ? playing->path : QString());
-    s.setValue(QStringLiteral("volume"), m_volume->value());
+    s.setValue(QStringLiteral("volume"), m_playback->volume());
     s.setValue(QStringLiteral("searchField"), m_searchField->currentIndex());
     s.setValue(QStringLiteral("geometry"), saveGeometry());
     s.setValue(QStringLiteral("splitter"), m_splitter->saveState());
@@ -1620,9 +1428,8 @@ void MainWindow::restoreSession()
     QSettings s;
     restoreGeometry(s.value(QStringLiteral("geometry")).toByteArray());
     m_splitter->restoreState(s.value(QStringLiteral("splitter")).toByteArray());
-    m_volume->setValue(s.value(QStringLiteral("volume"), 70).toInt());
-    m_engine->setVolume(m_volume->value() / 100.0f);
-    m_mpris->setVolume(m_volume->value() / 100.0);
+    m_playback->setVolume(s.value(QStringLiteral("volume"), 70).toInt());
+    m_mpris->setVolume(m_playback->volume() / 100.0);
     m_searchField->setCurrentIndex(s.value(QStringLiteral("searchField"), 0).toInt());
     m_headerState = s.value(QStringLiteral("header")).toByteArray();
     m_headerColumns = s.value(QStringLiteral("headerColumns"), 10).toInt();   // 10: before the date columns
@@ -1710,8 +1517,7 @@ void MainWindow::applySession(const SessionSnapshot &session)
         }
     }
     if (auto *page = playing; page && playingRow >= 0 && playingRow < page->model()->rowCount()) {
-        m_playingPage = page;
-        page->model()->setCurrent(page->model()->track(playingRow).uid);
+        m_playback->setCurrent(page->model(), playingRow);
         page->scrollToSourceRow(playingRow);
     }
 
