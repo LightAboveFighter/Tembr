@@ -239,6 +239,19 @@ void PlaylistModel::insertTracks(int row, const TrackList &tracks)
     emit contentsChanged();
 }
 
+TrackList PlaylistModel::copiesOf(const QList<int> &rows) const
+{
+    TrackList out;
+    out.reserve(rows.size());
+    for (int row : rows) {
+        if (row < 0 || row >= m_tracks.size())
+            continue;
+        out.append(m_tracks.at(row));
+        out.last().uid = 0;
+    }
+    return out;
+}
+
 void PlaylistModel::removeRowList(QList<int> rows)
 {
     if (m_readOnly)

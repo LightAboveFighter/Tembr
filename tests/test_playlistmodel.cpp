@@ -1,6 +1,7 @@
 #include "ui/PlaylistModel.h"
 
 #include <QApplication>
+#include <QElapsedTimer>
 #include <QSignalSpy>
 #include <QSortFilterProxyModel>
 #include <QTest>
@@ -220,6 +221,55 @@ private slots:
         m.sort(PlaylistModel::ColArtist, Qt::AscendingOrder);
         QCOMPARE(sorted.count(), 2);
         QCOMPARE(sorted.last().at(0).toInt(), int(PlaylistModel::ColArtist));
+    }
+
+    // Sent to another playlist: copies with their tags and new uids; the
+    // same track sent twice is two entries, nothing is read again, and the
+    // playlist they came from is as it was.
+    void copiesForAnotherPlaylist()
+    {
+        PlaylistModel from, to;
+        TrackList tracks;
+        for (int i = 0; i < 10000; ++i) {
+            Track t = Track::fromPath(QStringLiteral("/m/%1.mp3").arg(i));
+            t.title = QStringLiteral("Song %1").arg(i);
+            t.artist = QStringLiteral("Artist");
+            t.durationMs = 1000;
+            t.scanned = true;
+            tracks << t;
+        }
+        from.insertTracks(-1, tracks);
+        from.setCurrent(from.track(5).uid);
+        const TrackList before = from.tracks();
+
+        QList<int> all;
+        for (int i = 0; i < from.rowCount(); ++i)
+            all << i;
+        QElapsedTimer timer;
+        timer.start();
+        to.insertTracks(-1, from.copiesOf(all));
+        const qint64 ms = timer.elapsed();
+        qInfo("10000 tracks copied into another playlist in %lld ms", static_cast<long long>(ms));
+        QVERIFY(ms < 200);
+        QCOMPARE(to.rowCount(), 10000);
+        QVERIFY(!to.isScanning());
+        QCOMPARE(to.track(7).title, QStringLiteral("Song 7"));
+        QVERIFY(to.track(7).uid != from.track(7).uid);
+        QCOMPARE(to.currentUid(), quint64(0));   // the playing mark stays where it was
+
+        to.insertTracks(-1, from.copiesOf({3}));   // the same track again
+        QCOMPARE(to.rowCount(), 10001);
+        QVERIFY(to.track(10000).uid != to.track(3).uid);
+        QCOMPARE(to.rowOfUid(to.track(3).uid), 3);
+        QCOMPARE(to.rowOfUid(to.track(10000).uid), 10000);
+        to.setCurrent(to.track(10000).uid);
+        QCOMPARE(to.currentRow(), 10000);
+
+        QCOMPARE(from.rowCount(), before.size());
+        for (int i = 0; i < before.size(); i += 997)
+            QCOMPARE(from.track(i).uid, before[i].uid);
+        QCOMPARE(from.currentRow(), 5);
+        QVERIFY(from.copiesOf({-1, 99999}).isEmpty());
     }
 };
 
