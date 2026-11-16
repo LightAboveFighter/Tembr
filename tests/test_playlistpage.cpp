@@ -1,4 +1,5 @@
 #include "ui/PlaylistModel.h"
+#include "ui/PlaylistFilterProxy.h"
 #include "ui/PlaylistPage.h"
 
 #include <QApplication>
@@ -119,6 +120,27 @@ private slots:
         QCOMPARE(total, page.view()->viewport()->width());
 
         PlaylistPage::resetColumnWidths();
+    }
+
+    // Under a search, a track whose data changes (tags read, file found
+    // elsewhere) comes in or goes out with the next re-filter, not at once.
+    void searchFollowsChangedTracks()
+    {
+        PlaylistPage page(QStringLiteral("P"));
+        TrackList tracks;
+        for (const char *n : {"a", "b", "c"}) {
+            Track t = Track::fromPath(QStringLiteral("/m/%1.mp3").arg(QLatin1String(n)));
+            t.scanned = true;
+            tracks << t;
+        }
+        page.model()->insertTracks(-1, tracks);
+        page.setQuery(QStringLiteral("moved"), TrackQuery::Field::Path);
+        QCOMPARE(page.proxy()->rowCount(), 0);
+        page.model()->relocate({{1, QStringLiteral("/m/moved/b.mp3")}});
+        QTRY_COMPARE_WITH_TIMEOUT(page.proxy()->rowCount(), 1, 2000);
+        QCOMPARE(page.proxy()->mapToSource(page.proxy()->index(0, 0)).row(), 1);
+        page.model()->relocate({{1, QStringLiteral("/m/b.mp3")}});
+        QTRY_COMPARE_WITH_TIMEOUT(page.proxy()->rowCount(), 0, 2000);
     }
 };
 

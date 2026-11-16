@@ -18,6 +18,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QHashFunctions>
 #include <QRegularExpression>
 #include <QSet>
 #include <QSettings>
@@ -295,6 +296,12 @@ int runAndroid(const Args &a)
 
 int main(int argc, char *argv[])
 {
+    // Qt 6.2's hardware string hash with a random seed ignores the end of
+    // strings of 32+ characters: 100k paths below one long music folder fell
+    // into a handful of buckets, and QSet/QHash of paths went quadratic (a
+    // Local files rescan took over a minute). The fixed seed hashes them all;
+    // only local paths and tags are hashed, so seed flooding is no concern.
+    QHashSeed::setDeterministicGlobalSeed();
     QCoreApplication app(argc, argv);
     const Args a = parseArgs(app.arguments());
     loadPlayerRemaps();

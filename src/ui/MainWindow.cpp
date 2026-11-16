@@ -751,6 +751,7 @@ void MainWindow::createLocalPage()
     connect(m_localPage->model(), &PlaylistModel::sorted, this, [this](int column, Qt::SortOrder order) {
         m_localSortColumn = column;
         m_localSortOrder = order;
+        syncLocalSort();
         QSettings s;
         s.setValue(QStringLiteral("localFiles/sortColumn"), column);
         s.setValue(QStringLiteral("localFiles/sortOrder"), int(order));
@@ -774,18 +775,27 @@ void MainWindow::setLocalSort(int column, Qt::SortOrder order)
         return;
     }
     m_localSortColumn = -1;
+    syncLocalSort();
     QSettings().setValue(QStringLiteral("localFiles/sortColumn"), -1);
     m_localFiles->rescan(m_localPage->model()->tracks());   // comes back in folder order
 }
 
-void MainWindow::applyLocalScan(const TrackList &found)
+void MainWindow::syncLocalSort()
+{
+    TrackSort::Key key = TrackSort::Key::Title;
+    const bool sorted = PlaylistModel::sortKey(m_localSortColumn, &key);
+    m_localFiles->setSort(sorted, key, m_localSortOrder);
+}
+
+void MainWindow::applyLocalScan(const TrackList &found, int sortGeneration)
 {
     PlaylistModel *model = m_localPage->model();
-    TrackList tracks = found;   // in folder order
+    TrackList tracks = found;   // sorted by the scan, if its sort is still the one wanted
     TrackSort::Key key;
     bool byTags = false;
     if (PlaylistModel::sortKey(m_localSortColumn, &key)) {
-        TrackSort::sort(tracks, key, m_localSortOrder);
+        if (sortGeneration != m_localFiles->sortGeneration())
+            TrackSort::sort(tracks, key, m_localSortOrder);   // changed while it ran
         byTags = key != TrackSort::Key::Added && key != TrackSort::Key::Modified && key != TrackSort::Key::Path;
     }
     // Nothing changed (same entries, files and dates, in the same order):
@@ -1538,11 +1548,30 @@ void MainWindow::saveSession(SaveScope scope)
             playlists.append({page->model()->name(), page->model()->tracks()});
     }
     const int files = int(playlists.size());
-    if (const QStringList failed = SessionFiles::save(playlistDir(), playlists); !failed.isEmpty()) {
-        statusBar()->showMessage(QStringLiteral("Не удалось сохранить плейлисты: ") + failed.join(QStringLiteral("; ")), 10000);
-    }
-    if (scope == SaveScope::Everything)
+    const auto reportFailed = [this](const QStringList &failed) {
+        if (!failed.isEmpty())
+            statusBar()->showMessage(QStringLiteral("Не удалось сохранить плейлисты: ") + failed.join(QStringLiteral("; ")), 10000);
+    };
+    if (scope == SaveScope::Playlists) {
+        // Autosave: written in the background (100k tracks of XSPF take a
+        // second or two); the lists are shared copies, so nothing is
+        // copied here. One save at a time, in order.
+        auto *watcher = new QFutureWatcher<QStringList>(this);
+        connect(watcher, &QFutureWatcher<QStringList>::finished, this, [watcher, reportFailed] {
+            watcher->deleteLater();
+            reportFailed(watcher->result());
+        });
+        m_saveJob = QtConcurrent::run([previous = m_saveJob, dir = playlistDir(), playlists]() mutable {
+            previous.waitForFinished();
+            return SessionFiles::save(dir, playlists);
+        });
+        watcher->setFuture(m_saveJob);
+    } else {
+        // Quitting or logging out: done before going on.
+        m_saveJob.waitForFinished();
+        reportFailed(SessionFiles::save(playlistDir(), playlists));
         m_localFiles->saveCache(m_localPage->model()->tracks());
+    }
 
     QSettings s;
     s.setValue(QStringLiteral("session/version"), 2);
@@ -1579,6 +1608,7 @@ void MainWindow::restoreSession()
                                                                                        : Qt::AscendingOrder;
 
     createLocalPage();
+    syncLocalSort();
     const SessionFiles::Loaded session = SessionFiles::load(playlistDir());
     for (int i = 0; i < session.playlists.size(); ++i) {
         const PlaylistData &data = session.playlists[i];

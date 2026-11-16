@@ -7,6 +7,7 @@
 #include <QFutureWatcher>
 #include <QHash>
 #include <QList>
+#include <QTimer>
 
 // Tracks of one playlist. Sorting reorders the playlist itself (as in AIMP),
 // filtering is done on top of it by PlaylistFilterProxy. Tags are read in the
@@ -93,7 +94,8 @@ signals:
 
 private:
     void startScan(const TrackList &tracks);
-    void applyScanned(const Track &t);
+    void removeScattered(const QList<int> &descendingRows);
+    void applyScanned();          // the tags read so far (m_scanned)
     void rebuildIndex();
     void rememberCurrent();   // before rows go away
     void checkCurrent();      // after: detach if its row is gone
@@ -111,4 +113,6 @@ private:
     bool m_checkCurrent = false;      // rememberCurrent() took a snapshot
     bool m_paused = false;
     QList<QFutureWatcher<Track> *> m_watchers;
+    TrackList m_scanned;          // tags read, not applied yet
+    QTimer m_applyTimer;
 };

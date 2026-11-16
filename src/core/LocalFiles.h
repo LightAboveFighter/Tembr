@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Track.h"
+#include "core/TrackSort.h"
 
 #include <QFileSystemWatcher>
 #include <QFutureWatcher>
@@ -62,7 +63,7 @@ public:
     ~LocalFiles() override;
 
     LocalFilesSettings settings() const { return m_settings; }
-    void setSettings(const LocalFilesSettings &s);   // saves, then rescans
+    void setSettings(const LocalFilesSettings &s);   // saves; rescan() is up to the caller
 
     TrackList loadCache() const;
     void saveCache(const TrackList &tracks) const;
@@ -72,8 +73,14 @@ public:
     void rescan(const TrackList &known);
     bool isScanning() const { return m_watcher.isRunning(); }
 
+    // The order scans come back in (sorted on the scan's thread). `sorted`
+    // false: folder order. Each change counts up sortGeneration().
+    void setSort(bool sorted, TrackSort::Key key, Qt::SortOrder order);
+    int sortGeneration() const { return m_sortGeneration; }
+
 signals:
-    void scanned(const TrackList &tracks);
+    // `sortGeneration`: the sort the tracks are in (see setSort()).
+    void scanned(const TrackList &tracks, int sortGeneration);
     void scanningChanged(bool scanning);
     // A folder changed, or a rescan was asked for while one ran: call
     // rescan() with the tracks shown now.
@@ -87,4 +94,9 @@ private:
     QFileSystemWatcher m_fsWatcher;
     QTimer m_debounce;
     bool m_rescanPending = false;
+    bool m_sorted = false;
+    TrackSort::Key m_sortKey = TrackSort::Key::Title;
+    Qt::SortOrder m_sortOrder = Qt::AscendingOrder;
+    int m_sortGeneration = 0;
+    int m_scanGeneration = 0;   // of the scan running
 };

@@ -1,6 +1,12 @@
 #include "core/TrackQuery.h"
+#include "core/TrackSort.h"
 
+#include <QCollator>
+#include <QRandomGenerator>
 #include <QTest>
+
+#include <algorithm>
+#include <numeric>
 
 namespace {
 
@@ -66,6 +72,20 @@ private slots:
         QVERIFY(TrackQuery::parse(QStringLiteral("исполнитель:кино")).matches(kino));
         QVERIFY(TrackQuery::parse(QStringLiteral("елка")).matches(kino));          // ё == е
         QVERIFY(TrackQuery::parse(QStringLiteral("альбом:ЧЕРНЫЙ")).matches(kino));
+        QVERIFY(TrackQuery::parse(QStringLiteral("ЁЛКА")).matches(kino));
+        QVERIFY(TrackQuery::parse(QStringLiteral("кИнО")).matches(kino));
+        QVERIFY(TrackQuery::parse(QStringLiteral("QUEEN")).matches(queen));
+        QVERIFY(!TrackQuery::parse(QStringLiteral("елки")).matches(kino));
+    }
+
+    // Without tags the file name is searched (not the folders above it).
+    void fileNameWithoutTags()
+    {
+        Track t = Track::fromPath(QStringLiteral("/music/Rock/Some Ёлка Song.mp3"));
+        QVERIFY(TrackQuery::parse(QStringLiteral("some елка")).matches(t));
+        QVERIFY(TrackQuery::parse(QStringLiteral("SONG.MP3")).matches(t));
+        QVERIFY(!TrackQuery::parse(QStringLiteral("rock")).matches(t));
+        QVERIFY(TrackQuery::parse(QStringLiteral("path:rock")).matches(t));
     }
 
     void defaultFieldFromPicker()
@@ -84,6 +104,53 @@ private slots:
     void incompletePrefixIgnored()
     {
         QVERIFY(TrackQuery::parse(QStringLiteral("artist:")).isEmpty());
+    }
+
+    // Sorting with collation keys gives the order QCollator::compare gives:
+    // numbers by value, case ignored, Cyrillic, ties by album artist etc.
+    void sortKeysOrderAsCompare()
+    {
+        const QStringList words = {QStringLiteral("Track 2"), QStringLiteral("track 10"), QStringLiteral("Track 1"),
+                                   QStringLiteral("Ёлка"), QStringLiteral("елка"), QStringLiteral("Яблоко"),
+                                   QStringLiteral("apple"), QStringLiteral("Apple"), QStringLiteral(""),
+                                   QStringLiteral("Zebra 9"), QStringLiteral("zebra 09"), QStringLiteral("Über")};
+        QRandomGenerator rng(42);
+        TrackList tracks;
+        for (int i = 0; i < 400; ++i) {
+            Track t = Track::fromPath(QStringLiteral("/m/%1/%2.mp3").arg(words[rng.bounded(words.size())]).arg(i));
+            t.title = words[rng.bounded(words.size())];
+            t.artist = words[rng.bounded(words.size())];
+            t.album = words[rng.bounded(words.size())];
+            t.discNo = rng.bounded(2);
+            t.trackNo = rng.bounded(5);
+            tracks << t;
+        }
+        QCollator coll;
+        coll.setNumericMode(true);
+        coll.setCaseSensitivity(Qt::CaseInsensitive);
+        auto title = [](const Track &t) { return t.title.isEmpty() ? t.fileName() : t.title; };
+        auto dt = [](const Track &t) { return qint64(t.discNo) * 10000 + t.trackNo; };
+        for (auto key : {TrackSort::Key::Title, TrackSort::Key::Artist, TrackSort::Key::Path}) {
+            for (auto order : {Qt::AscendingOrder, Qt::DescendingOrder}) {
+                QVector<int> ref(tracks.size());
+                std::iota(ref.begin(), ref.end(), 0);
+                std::stable_sort(ref.begin(), ref.end(), [&](int ia, int ib) {
+                    const Track &a = tracks[ia], &b = tracks[ib];
+                    const int c = key == TrackSort::Key::Title  ? coll.compare(title(a), title(b))
+                                  : key == TrackSort::Key::Artist ? coll.compare(a.artist, b.artist)
+                                                                  : coll.compare(a.path, b.path);
+                    if (c)
+                        return order == Qt::AscendingOrder ? c < 0 : c > 0;
+                    int t = coll.compare(a.albumArtist.isEmpty() ? a.artist : a.albumArtist,
+                                         b.albumArtist.isEmpty() ? b.artist : b.albumArtist);
+                    if (!t) t = coll.compare(a.album, b.album);
+                    if (!t) t = dt(a) < dt(b) ? -1 : dt(a) > dt(b);
+                    if (!t) t = coll.compare(a.path, b.path);
+                    return t < 0;
+                });
+                QCOMPARE(TrackSort::permutation(tracks, key, order), ref);
+            }
+        }
     }
 };
 

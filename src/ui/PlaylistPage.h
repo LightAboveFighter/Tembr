@@ -70,11 +70,14 @@ protected:
 private:
     void scheduleFit(bool contentChanged);
     void measure(int column = -1);
+    bool measureRows(int firstColumn, int lastColumn, int top, int bottom, int maxRows);
+    bool growNeeds(int top, int bottom);   // after rows changed: wider only
 
     PlaylistModel *m_model;
     PlaylistFilterProxy *m_proxy;
     PlaylistView *m_view;
     QTimer m_fitTimer;
+    QTimer m_statsTimer;           // statsChanged once per burst of changes
     QVector<int> m_needs;          // per column, from the content
     bool m_needsDirty = true;
     bool m_applying = false;       // our own resizing, not the user's

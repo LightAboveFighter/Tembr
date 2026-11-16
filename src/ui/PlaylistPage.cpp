@@ -168,11 +168,18 @@ PlaylistPage::PlaylistPage(const QString &name, QWidget *parent)
     connect(m_view, &PlaylistView::deletePressed, this, &PlaylistPage::removeSelected);
     connect(m_view, &QWidget::customContextMenuRequested, this,
             [this](const QPoint &p) { emit contextMenuRequested(m_view->viewport()->mapToGlobal(p)); });
-    connect(m_model, &PlaylistModel::contentsChanged, this, &PlaylistPage::statsChanged);
-    connect(m_proxy, &QAbstractItemModel::rowsInserted, this, &PlaylistPage::statsChanged);
-    connect(m_proxy, &QAbstractItemModel::rowsRemoved, this, &PlaylistPage::statsChanged);
-    connect(m_proxy, &QAbstractItemModel::modelReset, this, &PlaylistPage::statsChanged);
-    connect(m_proxy, &QAbstractItemModel::layoutChanged, this, &PlaylistPage::statsChanged);
+    // The totals take a pass over the whole list: once per burst of changes
+    // (a removal of scattered rows, tags arriving under a filter), not once
+    // per run of rows.
+    m_statsTimer.setSingleShot(true);
+    m_statsTimer.setInterval(0);
+    connect(&m_statsTimer, &QTimer::timeout, this, &PlaylistPage::statsChanged);
+    const auto stats = [this] { m_statsTimer.start(); };
+    connect(m_model, &PlaylistModel::contentsChanged, this, stats);
+    connect(m_proxy, &QAbstractItemModel::rowsInserted, this, stats);
+    connect(m_proxy, &QAbstractItemModel::rowsRemoved, this, stats);
+    connect(m_proxy, &QAbstractItemModel::modelReset, this, stats);
+    connect(m_proxy, &QAbstractItemModel::layoutChanged, this, stats);
 
     // Column widths follow the content and the window.
     m_fitTimer.setSingleShot(true);
@@ -188,7 +195,17 @@ PlaylistPage::PlaylistPage(const QString &name, QWidget *parent)
     for (auto sig : {&QAbstractItemModel::rowsInserted, &QAbstractItemModel::rowsRemoved})
         connect(m_model, sig, this, [this] { scheduleFit(true); });
     connect(m_model, &QAbstractItemModel::modelReset, this, [this] { scheduleFit(true); });
-    connect(m_model, &QAbstractItemModel::dataChanged, this, [this] { scheduleFit(true); });
+    // Changed rows (tags read, the current track) can only make columns
+    // wider: measured alone. A full measure (90 ms at 100k rows) after
+    // every batch of tags kept the window busy while scanning.
+    connect(m_model, &QAbstractItemModel::dataChanged, this, [this](const QModelIndex &tl, const QModelIndex &br) {
+        if (m_needsDirty || m_needs.size() != PlaylistModel::ColumnCount) {
+            scheduleFit(true);
+            return;
+        }
+        if (growNeeds(tl.row(), br.row()))
+            m_fitTimer.start();
+    });
     connect(header, &QHeaderView::sectionCountChanged, this, [this] {
         m_layoutWanted = true;
         scheduleFit(true);
@@ -257,11 +274,26 @@ void PlaylistPage::setReadOnly(bool readOnly)
     m_view->viewport()->setAcceptDrops(!readOnly);
 }
 
+// Rows are selected whole (SelectRows), so the ranges give them directly;
+// QItemSelectionModel::selectedRows() checks every row against every range,
+// which is quadratic for a scattered selection.
+static QList<int> selectedProxyRows(const QItemSelectionModel *sel)
+{
+    QList<int> rows;
+    for (const QItemSelectionRange &r : sel->selection()) {
+        for (int row = r.top(); row <= r.bottom(); ++row)
+            rows.append(row);
+    }
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    return rows;
+}
+
 QList<int> PlaylistPage::selectedSourceRows() const
 {
     QList<int> rows;
-    for (const QModelIndex &idx : m_view->selectionModel()->selectedRows())
-        rows.append(m_proxy->mapToSource(idx).row());
+    for (int row : selectedProxyRows(m_view->selectionModel()))
+        rows.append(m_proxy->mapToSource(m_proxy->index(row, 0)).row());
     std::sort(rows.begin(), rows.end());
     return rows;
 }
@@ -282,9 +314,8 @@ void PlaylistPage::removeSelected()
     const QList<int> rows = selectedSourceRows();
     if (rows.isEmpty())
         return;
-    int nextProxyRow = m_proxy->rowCount();
-    for (const QModelIndex &idx : m_view->selectionModel()->selectedRows())
-        nextProxyRow = std::min(nextProxyRow, idx.row());
+    const QList<int> proxyRows = selectedProxyRows(m_view->selectionModel());
+    const int nextProxyRow = proxyRows.isEmpty() ? m_proxy->rowCount() : proxyRows.first();
     m_model->removeRowList(rows);
     const int count = m_proxy->rowCount();
     if (count > 0) {
@@ -296,7 +327,7 @@ void PlaylistPage::removeSelected()
 void PlaylistPage::setQuery(const QString &text, TrackQuery::Field field)
 {
     m_proxy->setQuery(text, field);
-    emit statsChanged();
+    m_statsTimer.start();
 }
 
 void PlaylistPage::scrollToSourceRow(int row)
@@ -354,13 +385,6 @@ void PlaylistPage::showEvent(QShowEvent *e)
 void PlaylistPage::measure(int column)
 {
     constexpr int kMaxRows = 4000;
-    const QFontMetrics fm(m_view->font());
-    QFont bold = m_view->font();
-    bold.setBold(true);
-    const QFontMetrics bm(bold);
-    // Style sheet padding (4 + 4) and the delegate's text margins (frame margin + 1 a side).
-    const int padding = 8 + 2 * (m_view->style()->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, m_view) + 1) + 2;
-    const int icon = m_view->style()->pixelMetric(QStyle::PM_SmallIconSize, nullptr, m_view) + 4;
     QHeaderView *header = m_view->horizontalHeader();
 
     if (m_needs.size() != PlaylistModel::ColumnCount)
@@ -372,9 +396,26 @@ void PlaylistPage::measure(int column)
     for (int col = first; col <= last; ++col)
         m_needs[col] = header->sectionSizeHint(col);
 
-    const int rows = m_model->rowCount();
-    const int step = qMax(1, rows / kMaxRows);
+    measureRows(first, last, 0, m_model->rowCount() - 1, kMaxRows);
+    if (column < 0)
+        m_needsDirty = false;
+}
+
+// Widens m_needs[first..last] to what rows top..bottom need (at most
+// `maxRows` of them, evenly spread, and always the current track). True if a
+// column got wider.
+bool PlaylistPage::measureRows(int first, int last, int top, int bottom, int maxRows)
+{
+    const QFontMetrics fm(m_view->font());
+    QFont bold = m_view->font();
+    bold.setBold(true);
+    const QFontMetrics bm(bold);
+    // Style sheet padding (4 + 4) and the delegate's text margins (frame margin + 1 a side).
+    const int padding = 8 + 2 * (m_view->style()->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, m_view) + 1) + 2;
+    const int icon = m_view->style()->pixelMetric(QStyle::PM_SmallIconSize, nullptr, m_view) + 4;
+    QHeaderView *header = m_view->horizontalHeader();
     const int current = m_model->currentRow();
+    bool wider = false;
     auto measureRow = [&](int row) {
         const QFontMetrics &m = row == current ? bm : fm;
         for (int col = first; col <= last; ++col) {
@@ -384,15 +425,24 @@ void PlaylistPage::measure(int column)
             int w = m.horizontalAdvance(text) + padding;
             if (col == PlaylistModel::ColTitle)
                 w += icon;   // play/pause mark of the current track
-            m_needs[col] = qMax(m_needs[col], w);
+            if (w > m_needs[col]) {
+                m_needs[col] = w;
+                wider = true;
+            }
         }
     };
-    for (int row = 0; row < rows; row += step)
+    const int rows = bottom - top + 1;
+    const int step = qMax(1, rows / maxRows);
+    for (int row = top; row <= bottom; row += step)
         measureRow(row);
-    if (current >= 0)
+    if (current >= top && current <= bottom)
         measureRow(current);
-    if (column < 0)
-        m_needsDirty = false;
+    return wider;
+}
+
+bool PlaylistPage::growNeeds(int top, int bottom)
+{
+    return measureRows(0, PlaylistModel::ColumnCount - 1, top, bottom, 1000);
 }
 
 void PlaylistPage::fitColumns()

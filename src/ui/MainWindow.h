@@ -59,7 +59,8 @@ private:
     PlaylistPage *editablePage();   // current page unless read-only, else another (created if needed)
     bool refuseReadOnly(PlaylistPage *page);
     void createLocalPage();
-    void applyLocalScan(const TrackList &tracks);
+    void applyLocalScan(const TrackList &tracks, int sortGeneration);
+    void syncLocalSort();   // m_localSortColumn/Order to LocalFiles
     void showLocalFilesSettings();
     // column < 0: by folder, as found on disk (AIMP's grouping by %FileDir).
     void setLocalSort(int column, Qt::SortOrder order);
@@ -149,6 +150,7 @@ private:
     QString m_artFile;          // cover exported for MPRIS clients
     int m_coverJob = 0;         // the cover read last; older results are dropped
     int m_failStreak = 0;       // consecutive unplayable tracks skipped
+    QFuture<QStringList> m_saveJob;   // autosave being written
     QFuture<QString> m_hotkeyJob;   // background registration at startup
     bool m_hotkeysReleased = false;
     QTimer *m_autosave = nullptr;
