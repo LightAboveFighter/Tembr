@@ -5,6 +5,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QSet>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -135,6 +136,29 @@ private slots:
         QCOMPARE(t[1].fileSize, 10);         // marked changed
         QVERIFY(!t[2].scanned);
         QVERIFY(t[2].uid != known[0].uid && t[2].uid != known[1].uid);
+    }
+
+    // Two CUE sheets for one audio file: their tracks stay apart across rescans.
+    void twoCueSheetsForOneFile()
+    {
+        QTemporaryDir music;
+        writeFile(music.filePath(QStringLiteral("a.flac")), "flac");
+        const QByteArray cue = "FILE \"a.flac\" WAVE\r\n  TRACK 01 AUDIO\r\n    INDEX 01 00:00:00\r\n"
+                               "  TRACK 02 AUDIO\r\n    INDEX 01 01:00:00\r\n";
+        writeFile(music.filePath(QStringLiteral("a.cue")), cue);
+        writeFile(music.filePath(QStringLiteral("b.cue")), cue);
+        LocalFilesSettings s;
+        s.folders = {music.path()};
+        const TrackList first = LocalLibrary::scan(s, {});
+        const TrackList second = LocalLibrary::scan(s, first);
+        QCOMPARE(second.size(), 4);
+        QSet<quint64> uids;
+        for (int i = 0; i < second.size(); ++i) {
+            uids.insert(second[i].uid);
+            QCOMPARE(second[i].cueSheet, first[i].cueSheet);
+            QCOMPARE(second[i].uid, first[i].uid);
+        }
+        QCOMPARE(uids.size(), 4);
     }
 
     // The list is replaced when files come or go, and also when a file

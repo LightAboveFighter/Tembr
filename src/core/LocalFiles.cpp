@@ -17,9 +17,11 @@
 
 namespace {
 
+// Two sheets for one audio file give tracks with the same file and start.
 QString trackKey(const Track &t)
 {
-    return t.isCueTrack() ? t.path + QLatin1Char('#') + QString::number(t.startMs) : t.path;
+    return t.isCueTrack() ? t.cueSheet + QLatin1Char('|') + t.path + QLatin1Char('#') + QString::number(t.startMs)
+                          : t.path;
 }
 
 QStringList cleanFolders(const QStringList &in)
@@ -197,6 +199,7 @@ TrackList LocalLibrary::scan(const LocalFilesSettings &settings, const TrackList
         kept.addedMs = it->addedMs > 0 ? it->addedMs : FileTimes::addedMs(fi);   // first seen stays
         kept.modifiedMs = modified;
     }
+
     return out;
 }
 
