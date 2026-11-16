@@ -75,6 +75,7 @@ private:
     PlaylistFilterProxy *m_proxy;
     PlaylistView *m_view;
     QTimer m_fitTimer;
+    QTimer m_statsTimer;           // statsChanged once per burst of changes
     QVector<int> m_needs;          // per column, from the content
     bool m_needsDirty = true;
     bool m_applying = false;       // our own resizing, not the user's

@@ -168,11 +168,18 @@ PlaylistPage::PlaylistPage(const QString &name, QWidget *parent)
     connect(m_view, &PlaylistView::deletePressed, this, &PlaylistPage::removeSelected);
     connect(m_view, &QWidget::customContextMenuRequested, this,
             [this](const QPoint &p) { emit contextMenuRequested(m_view->viewport()->mapToGlobal(p)); });
-    connect(m_model, &PlaylistModel::contentsChanged, this, &PlaylistPage::statsChanged);
-    connect(m_proxy, &QAbstractItemModel::rowsInserted, this, &PlaylistPage::statsChanged);
-    connect(m_proxy, &QAbstractItemModel::rowsRemoved, this, &PlaylistPage::statsChanged);
-    connect(m_proxy, &QAbstractItemModel::modelReset, this, &PlaylistPage::statsChanged);
-    connect(m_proxy, &QAbstractItemModel::layoutChanged, this, &PlaylistPage::statsChanged);
+    // The totals take a pass over the whole list: once per burst of changes
+    // (a removal of scattered rows, tags arriving under a filter), not once
+    // per run of rows.
+    m_statsTimer.setSingleShot(true);
+    m_statsTimer.setInterval(0);
+    connect(&m_statsTimer, &QTimer::timeout, this, &PlaylistPage::statsChanged);
+    const auto stats = [this] { m_statsTimer.start(); };
+    connect(m_model, &PlaylistModel::contentsChanged, this, stats);
+    connect(m_proxy, &QAbstractItemModel::rowsInserted, this, stats);
+    connect(m_proxy, &QAbstractItemModel::rowsRemoved, this, stats);
+    connect(m_proxy, &QAbstractItemModel::modelReset, this, stats);
+    connect(m_proxy, &QAbstractItemModel::layoutChanged, this, stats);
 
     // Column widths follow the content and the window.
     m_fitTimer.setSingleShot(true);
@@ -296,7 +303,7 @@ void PlaylistPage::removeSelected()
 void PlaylistPage::setQuery(const QString &text, TrackQuery::Field field)
 {
     m_proxy->setQuery(text, field);
-    emit statsChanged();
+    m_statsTimer.start();
 }
 
 void PlaylistPage::scrollToSourceRow(int row)
