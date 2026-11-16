@@ -6,6 +6,7 @@
 #include "core/MetadataReader.h"
 #include "core/PathResolver.h"
 #include "core/PlaylistIO.h"
+#include "core/SessionFiles.h"
 #include "core/Relocator.h"
 #include "platform/Mpris.h"
 #include "ui/DeleteFilesDialog.h"
@@ -26,7 +27,6 @@
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDialog>
-#include <QDateTime>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -1526,35 +1526,19 @@ void MainWindow::saveSession(SaveScope scope)
 {
     if (m_autosave)
         m_autosave->stop();
-    const QString dir = playlistDir();
-    QDir().mkpath(dir);
-
     // Tab indexes count every tab; files are written for ordinary playlists only
-    // (Local files are rebuilt from the folders, with their own cache). Each
-    // file is replaced atomically; old files go only after all are written.
+    // (Local files are rebuilt from the folders, with their own cache).
     int playingTab = -1;
-    int files = 0;
-    QSet<QString> written;
-    QStringList failed;
+    QList<PlaylistData> playlists;
     for (int i = 0; i < m_tabs->count(); ++i) {
         auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(i));
         if (page == m_playingPage)
             playingTab = i;
-        if (page == m_localPage)
-            continue;
-        const QString name = QStringLiteral("%1.xspf").arg(files++, 3, 10, QLatin1Char('0'));
-        QString error;
-        if (PlaylistIO::save(dir + QLatin1Char('/') + name, {page->model()->name(), page->model()->tracks()}, &error))
-            written.insert(name);
-        else
-            failed << QStringLiteral("%1: %2").arg(page->model()->name(), error);
+        if (page != m_localPage)
+            playlists.append({page->model()->name(), page->model()->tracks()});
     }
-    if (failed.isEmpty()) {
-        for (const QString &old : QDir(dir).entryList({QStringLiteral("*.xspf")}, QDir::Files)) {
-            if (!written.contains(old))
-                QFile::remove(dir + QLatin1Char('/') + old);
-        }
-    } else {
+    const int files = int(playlists.size());
+    if (const QStringList failed = SessionFiles::save(playlistDir(), playlists); !failed.isEmpty()) {
         statusBar()->showMessage(QStringLiteral("Не удалось сохранить плейлисты: ") + failed.join(QStringLiteral("; ")), 10000);
     }
     if (scope == SaveScope::Everything)
@@ -1595,26 +1579,13 @@ void MainWindow::restoreSession()
                                                                                        : Qt::AscendingOrder;
 
     createLocalPage();
-    // Every file there, also past session/count: a crash between writing the
-    // files and the count leaves more of them. The next save replaces (and
-    // removes) these files, so one that cannot be read is first kept aside.
-    const QString dir = playlistDir();
-    QStringList unreadable;
-    const QStringList files = QDir(dir).entryList({QStringLiteral("[0-9][0-9][0-9].xspf")}, QDir::Files, QDir::Name);
-    for (int i = 0; i < files.size(); ++i) {
-        PlaylistData data;
-        const QString file = dir + QLatin1Char('/') + files[i];
-        if (!PlaylistIO::load(file, data)) {
-            const QString kept = file + QDateTime::currentDateTime().toString(QStringLiteral(".yyyyMMdd-HHmmss")) + QStringLiteral(".damaged");
-            if (QFile::copy(file, kept))
-                unreadable << kept;
-            if (data.tracks.isEmpty())
-                continue;   // what could be read is kept below
-        }
+    const SessionFiles::Loaded session = SessionFiles::load(playlistDir());
+    for (int i = 0; i < session.playlists.size(); ++i) {
+        const PlaylistData &data = session.playlists[i];
         PlaylistPage *page = addPage(data.name.isEmpty() ? QStringLiteral("Плейлист %1").arg(i + 1) : data.name);
         page->model()->insertTracks(-1, data.tracks);
     }
-    if (!unreadable.isEmpty()) {
+    if (const QStringList unreadable = session.keptAside; !unreadable.isEmpty()) {
         QTimer::singleShot(0, this, [this, unreadable] {
             QMessageBox::warning(this, windowTitle(),
                                  QStringLiteral("Не удалось прочитать плейлисты прошлого сеанса полностью. Копии файлов сохранены:\n\n")
