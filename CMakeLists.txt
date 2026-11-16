@@ -68,6 +68,7 @@ add_library(tembr_ui STATIC
     src/ui/PlaylistFilterProxy.h src/ui/PlaylistFilterProxy.cpp
     src/ui/PlaylistPage.h src/ui/PlaylistPage.cpp
     src/ui/PlaylistPanes.h src/ui/PlaylistPanes.cpp
+    src/ui/DropChooser.h src/ui/DropChooser.cpp
     src/ui/TrackInfoDialog.h src/ui/TrackInfoDialog.cpp
     src/ui/Theme.h src/ui/Theme.cpp
     src/ui/DialogFrame.h
@@ -129,10 +130,19 @@ if(TEMBR_BUILD_TESTS)
 
     add_executable(test_playlistpage tests/test_playlistpage.cpp src/ui/PlaylistPage.cpp src/ui/PlaylistPage.h
                    src/ui/PlaylistModel.cpp src/ui/PlaylistModel.h src/ui/PlaylistFilterProxy.cpp
-                   src/ui/PlaylistFilterProxy.h src/ui/Icons.cpp src/ui/Theme.cpp)
+                   src/ui/PlaylistFilterProxy.h src/ui/DropChooser.cpp src/ui/DropChooser.h
+                   src/ui/Icons.cpp src/ui/Theme.cpp)
     target_link_libraries(test_playlistpage PRIVATE tembr_core Qt6::Widgets Qt6::Test)
     add_test(NAME test_playlistpage COMMAND test_playlistpage)
     set_tests_properties(test_playlistpage PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    add_executable(test_dragtracks tests/test_dragtracks.cpp src/ui/PlaylistPage.cpp src/ui/PlaylistPage.h
+                   src/ui/PlaylistModel.cpp src/ui/PlaylistModel.h src/ui/PlaylistFilterProxy.cpp
+                   src/ui/PlaylistFilterProxy.h src/ui/DropChooser.cpp src/ui/DropChooser.h
+                   src/ui/Icons.cpp src/ui/Theme.cpp)
+    target_link_libraries(test_dragtracks PRIVATE tembr_core Qt6::Widgets Qt6::Test)
+    add_test(NAME test_dragtracks COMMAND test_dragtracks)
+    set_tests_properties(test_dragtracks PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     add_executable(test_playbackcontroller tests/test_playbackcontroller.cpp tests/TestAudio.h)
     target_link_libraries(test_playbackcontroller PRIVATE tembr_ui Qt6::Test)

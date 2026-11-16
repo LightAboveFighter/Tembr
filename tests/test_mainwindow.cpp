@@ -6,6 +6,7 @@
 #include "audio/AudioEngine.h"
 #include "core/LocalFiles.h"
 #include "core/SessionFiles.h"
+#include "ui/DropChooser.h"
 #include "ui/MainWindow.h"
 #include "ui/PlaylistFilterProxy.h"
 #include "ui/PlaylistModel.h"
@@ -15,6 +16,7 @@
 #include <QApplication>
 #include <QCryptographicHash>
 #include <QDirIterator>
+#include <QDrag>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
@@ -624,6 +626,117 @@ private slots:
         QCOMPARE(w.panes()->shownPlaylist(), playlistAt(w, 0));
         QTRY_COMPARE(playlistAt(w, 0)->model()->rowCount(), 1);
         QCOMPARE(playlistAt(w, 0)->model()->track(0).path, file);
+    }
+
+    // Tracks dragged from Local files: onto the free right pane they make a
+    // playlist; onto a playlist (after the chooser) they go there and its
+    // pane becomes the active one.
+    void tracksDraggedFromLocalFiles()
+    {
+        SessionSnapshot snap;
+        snap.localFiles = playlist({}, {audio(QStringLiteral("music/l0.wav")), audio(QStringLiteral("music/l1.wav")),
+                                        audio(QStringLiteral("music/l2.wav"))}).tracks;
+        MainWindow w(options([snap] { return snap; }));
+        QSignalSpy loaded(&w, &MainWindow::sessionLoaded);
+        QSignalSpy scanned(w.findChild<LocalFiles *>(), &LocalFiles::scanned);
+        w.show();
+        QVERIFY(loaded.wait(10000));
+        QVERIFY(scanned.wait(10000));   // the folder scan replaces the list (and its selection)
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        PlaylistPage *local = localOf(w);
+        QCOMPARE(playlistCount(w), 0);
+
+        // The drag as the list makes it; kept instead of run (no drag offscreen).
+        std::unique_ptr<TrackDragData> data;
+        PlaylistView::setDragRunner([&data](QDrag *drag) {
+            auto *tracks = qobject_cast<TrackDragData *>(drag->mimeData());
+            data = std::make_unique<TrackDragData>(tracks->source(), tracks->uids());
+        });
+        local->view()->selectionModel()->select(local->proxy()->index(1, 0),
+                                                QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        emit local->view()->dragRequested();
+        PlaylistView::setDragRunner({});
+        QVERIFY(data);
+        const QString l1 = local->model()->track(1).path;
+
+        QWidget *free = nullptr;
+        for (QPushButton *b : w.panes()->findChildren<QPushButton *>()) {
+            if (b->text() == QStringLiteral("Новый плейлист"))
+                free = b->parentWidget();
+        }
+        QVERIFY(free && free->isVisible());
+        const QPoint pos = free->rect().center();
+        QDragEnterEvent enter(pos, Qt::CopyAction | Qt::MoveAction, data.get(), Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(free, &enter);
+        QVERIFY(enter.isAccepted());
+        QDropEvent drop(pos, Qt::CopyAction | Qt::MoveAction, data.get(), Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(free, &drop);
+        QCOMPARE(playlistCount(w), 1);
+        PlaylistPage *made = playlistAt(w, 0);
+        QCOMPARE(w.panes()->shownPlaylist(), made);
+        QCOMPARE(made->model()->rowCount(), 1);   // at once: nothing to choose in an empty playlist
+        QCOMPARE(made->model()->track(0).path, l1);
+        QCOMPARE(local->model()->rowCount(), 3);   // copied, not moved
+
+        // Once more, onto the playlist, with Local files active: at the end.
+        w.panes()->activate(PlaylistPanes::Pane::Local);
+        QCOMPARE(w.panes()->activePage(), local);
+        const QPoint at = made->view()->visualRect(made->proxy()->index(0, 1)).center();
+        QDragEnterEvent over(at, Qt::CopyAction | Qt::MoveAction, data.get(), Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(made->view()->viewport(), &over);
+        QVERIFY(over.isAccepted());
+        QDropEvent again(at, Qt::CopyAction | Qt::MoveAction, data.get(), Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(made->view()->viewport(), &again);
+        QVERIFY(again.isAccepted());
+        QCOMPARE(w.panes()->activePage(), made);   // dropping there is working there
+        DropChooser *chooser = nullptr;
+        QTRY_VERIFY((chooser = made->findChild<DropChooser *>()) && chooser->isVisible());
+        QTest::keyClick(chooser, Qt::Key_Down);
+        QCOMPARE(made->model()->rowCount(), 2);
+        QCOMPARE(made->model()->track(1).path, l1);
+        QVERIFY(w.statusBar()->currentMessage().contains(QStringLiteral(": 1")));
+    }
+
+    // Tracks moved within a playlist are saved like any other change: by
+    // the autosave, without closing the window.
+    void reorderIsAutosaved()
+    {
+        SessionSnapshot snap;
+        snap.playlists = {playlist(QStringLiteral("A"), {audio(QStringLiteral("r0.wav")), audio(QStringLiteral("r1.wav")),
+                                                         audio(QStringLiteral("r2.wav"))})};
+        MainWindow w(options([snap] { return snap; }));
+        QSignalSpy loaded(&w, &MainWindow::sessionLoaded);
+        w.show();
+        QVERIFY(loaded.wait(10000));
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        PlaylistPage *a = playlistAt(w, 0);
+        a->view()->selectionModel()->select(a->proxy()->index(2, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        std::unique_ptr<TrackDragData> data;
+        PlaylistView::setDragRunner([&data](QDrag *drag) {
+            auto *tracks = qobject_cast<TrackDragData *>(drag->mimeData());
+            data = std::make_unique<TrackDragData>(tracks->source(), tracks->uids());
+        });
+        emit a->view()->dragRequested();
+        PlaylistView::setDragRunner({});
+        QVERIFY(data);
+        const QPoint at = a->view()->visualRect(a->proxy()->index(0, 1)).center();   // before r0
+        QWidget *vp = a->view()->viewport();
+        QDragEnterEvent enter(at, Qt::CopyAction | Qt::MoveAction, data.get(), Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(vp, &enter);
+        QDropEvent drop(at, Qt::CopyAction | Qt::MoveAction, data.get(), Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(vp, &drop);
+        QCOMPARE(a->model()->track(0).title, QStringLiteral("r2"));
+
+        const auto savedOrder = [] {
+            QStringList out;
+            const auto loaded = SessionFiles::load(playlistDir());
+            if (loaded.playlists.size() == 1) {
+                for (const Track &t : loaded.playlists[0].tracks)
+                    out << QFileInfo(t.path).completeBaseName();
+            }
+            return out;
+        };
+        QTRY_COMPARE_WITH_TIMEOUT(savedOrder(), (QStringList{"r2", "r0", "r1"}), 10000);
     }
 
     // The header of the right pane lists the playlists; picking one shows

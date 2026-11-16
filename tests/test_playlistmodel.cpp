@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QElapsedTimer>
+#include <QItemSelectionModel>
 #include <QSignalSpy>
 #include <QSortFilterProxyModel>
 #include <QTest>
@@ -270,6 +271,118 @@ private slots:
             QCOMPARE(from.track(i).uid, before[i].uid);
         QCOMPARE(from.currentRow(), 5);
         QVERIFY(from.copiesOf({-1, 99999}).isEmpty());
+    }
+
+    // Dragged within the playlist: the tracks stand together where they were
+    // dropped, in their order; the rest keep theirs.
+    void moveTracksToStartMiddleEnd_data()
+    {
+        QTest::addColumn<QStringList>("moved");
+        QTest::addColumn<int>("before");
+        QTest::addColumn<QString>("expected");
+        QTest::addColumn<int>("first");
+        QTest::newRow("scattered to the start") << QStringList{"C", "F"} << 0 << "CFABDEG" << 0;
+        QTest::newRow("scattered to the end") << QStringList{"A", "D"} << 7 << "BCEFGAD" << 5;
+        QTest::newRow("scattered into the middle") << QStringList{"A", "G", "C"} << 4 << "BDACGEF" << 2;
+        QTest::newRow("down past themselves") << QStringList{"B", "C"} << 6 << "ADEFBCG" << 4;
+        QTest::newRow("up") << QStringList{"E", "F"} << 1 << "AEFBCDG" << 1;
+        QTest::newRow("before one of the moved") << QStringList{"B", "D", "F"} << 3 << "ACBDFEG" << 2;
+        QTest::newRow("unsorted rows, out of range ignored") << QStringList{"F", "B"} << 99 << "ACDEGBF" << 5;
+    }
+
+    void moveTracksToStartMiddleEnd()
+    {
+        QFETCH(QStringList, moved);
+        QFETCH(int, before);
+        QFETCH(QString, expected);
+        QFETCH(int, first);
+        PlaylistModel m;
+        m.insertTracks(-1, make({"A", "B", "C", "D", "E", "F", "G"}));
+        QList<int> rows = rowsOf(m, moved);
+        std::reverse(rows.begin(), rows.end());
+        rows << -3 << 42;
+        QSignalSpy layout(&m, &QAbstractItemModel::layoutChanged);
+        QCOMPARE(m.moveTracks(rows, before), first);
+        QString order;
+        for (int r = 0; r < m.rowCount(); ++r)
+            order += m.track(r).title;
+        QCOMPARE(order, expected);
+        QCOMPARE(layout.count(), 1);   // one change for any number of rows
+        for (int r = 0; r < m.rowCount(); ++r)
+            QCOMPARE(m.rowOfUid(m.track(r).uid), r);
+    }
+
+    // Dropped where they already stand: no change, nothing announced.
+    void moveOntoItselfChangesNothing()
+    {
+        PlaylistModel m;
+        const TrackList tracks = make({"A", "B", "C", "D", "E"});
+        m.insertTracks(-1, tracks);
+        QSignalSpy layout(&m, &QAbstractItemModel::layoutAboutToBeChanged);
+        for (int before : {1, 2, 3, 4})   // B..D moved before B, C, D or E: where they are
+            QCOMPARE(m.moveTracks({1, 2, 3}, before), -1);
+        QCOMPARE(m.moveTracks({}, 0), -1);
+        QCOMPARE(layout.count(), 0);
+        for (int r = 0; r < tracks.size(); ++r)
+            QCOMPARE(m.track(r).uid, tracks[r].uid);
+
+        m.setReadOnly(true);   // Local files: never reordered
+        QCOMPARE(m.moveTracks({4}, 0), -1);
+        QCOMPARE(m.track(0).uid, tracks[0].uid);
+    }
+
+    // The playing track moves with the others and stays the current one;
+    // next / previous follow the new order. The selection follows its tracks.
+    void moveKeepsTheCurrentTrackAndSelection()
+    {
+        PlaylistModel m;
+        m.insertTracks(-1, make({"A", "B", "C", "D", "E"}));
+        m.setCurrent(m.track(1).uid);   // B plays
+        QSortFilterProxyModel proxy;
+        proxy.setSourceModel(&m);
+        QItemSelectionModel sel(&proxy);
+        sel.select(proxy.index(1, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        sel.select(proxy.index(3, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        sel.setCurrentIndex(proxy.index(3, 0), QItemSelectionModel::NoUpdate);
+
+        QCOMPARE(m.moveTracks(rowsOf(m, {"B", "D"}), 5), 3);   // A C E B D
+        QCOMPARE(m.currentTrack()->title, QStringLiteral("B"));
+        QCOMPARE(m.currentRow(), 3);
+        QVERIFY(!m.isCurrentDetached());
+        QCOMPARE(title(m, m.nextRow()), QStringLiteral("D"));
+        QCOMPARE(title(m, m.previousRow()), QStringLiteral("E"));
+        QCOMPARE(m.data(m.index(3, PlaylistModel::ColIndex), Qt::DisplayRole).toInt(), 4);
+        QVERIFY(sel.isRowSelected(3, {}));
+        QVERIFY(sel.isRowSelected(4, {}));
+        QVERIFY(!sel.isRowSelected(1, {}));
+        QCOMPARE(m.track(proxy.mapToSource(sel.currentIndex()).row()).title, QStringLiteral("D"));
+    }
+
+    // 10k scattered tracks of a 100k playlist: linear, not one move per run.
+    void moveManyScatteredTracksCheaply()
+    {
+        TrackList tracks;
+        for (int i = 0; i < 100000; ++i) {
+            Track t = Track::fromPath(QStringLiteral("/m/%1.mp3").arg(i));
+            t.title = QString::number(i);
+            t.scanned = true;
+            tracks << t;
+        }
+        PlaylistModel m;
+        m.insertTracks(-1, tracks);
+        QList<int> rows;
+        for (int r = 3; r < 100000; r += 10)
+            rows << r;
+        QElapsedTimer timer;
+        timer.start();
+        QCOMPARE(m.moveTracks(rows, 50000), 45000);
+        const qint64 ms = timer.elapsed();
+        qInfo("10000 scattered tracks of 100000 moved in %lld ms", static_cast<long long>(ms));
+        QVERIFY(ms < 1000);
+        QCOMPARE(m.track(45000).title, QStringLiteral("3"));
+        QCOMPARE(m.track(54999).title, QStringLiteral("99993"));
+        QCOMPARE(m.track(44999).title, QStringLiteral("49999"));
+        QCOMPARE(m.track(55000).title, QStringLiteral("50000"));
     }
 };
 

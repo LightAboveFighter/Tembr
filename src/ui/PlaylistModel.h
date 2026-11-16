@@ -64,6 +64,14 @@ public:
     // two entries). Not the playing / missing marks of this list.
     TrackList copiesOf(const QList<int> &rows) const;
     void removeRowList(QList<int> rows);
+    // Moves the tracks of `rows` (any order, may be scattered) so that they
+    // stand together, in their order, where row `before` was (0..rowCount():
+    // before that track, or at the end). One pass over the list; tracks keep
+    // their uids, so the current track stays current and the persistent
+    // indexes (selection, current index) follow their tracks. Returns the row
+    // of the first moved track, or -1 if nothing changed (also when the
+    // tracks already stand there).
+    int moveTracks(QList<int> rows, int before);
     void removeMissing();
     void clear();
     void setMissing(int row, bool missing);

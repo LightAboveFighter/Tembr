@@ -83,6 +83,8 @@ signals:
     void orderChanged();
     // Files dropped on the free right pane (no playlists yet).
     void filesDropped(const QStringList &paths);
+    // Tracks of a list (by uid) dropped there.
+    void tracksDropped(PlaylistPage *source, const QList<quint64> &uids);
 
 private:
     void fillMenu();
