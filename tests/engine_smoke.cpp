@@ -30,15 +30,13 @@ void check(bool ok, const QString &what)
 // Plays a track to the end (optionally seeking after 500 ms); returns wall time.
 qint64 playThrough(AudioEngine &engine, const Track &t, qint64 seekTo = -1)
 {
-    if (!engine.load(t.path, t.startMs, t.endMs)) {
-        check(false, QStringLiteral("load: ") + engine.lastError());
-        return -1;
-    }
     QEventLoop loop;
     QElapsedTimer clock;
     bool finished = false;
+    QString failed;
     QObject::connect(&engine, &AudioEngine::finished, &loop, [&] { finished = true; loop.quit(); });
-    QTimer::singleShot(engine.durationMs() + 4000, &loop, &QEventLoop::quit);
+    QObject::connect(&engine, &AudioEngine::loadFailed, &loop, [&](const QString &e) { failed = e; loop.quit(); });
+    QTimer::singleShot(t.durationMs + 4000, &loop, &QEventLoop::quit);
     if (seekTo >= 0) {
         QTimer::singleShot(500, &loop, [&] {
             engine.seek(seekTo);
@@ -50,8 +48,14 @@ qint64 playThrough(AudioEngine &engine, const Track &t, qint64 seekTo = -1)
         });
     }
     clock.start();
+    engine.load(t.path, t.startMs, t.endMs);
     engine.play();
     loop.exec();
+    QObject::disconnect(&engine, nullptr, &loop, nullptr);
+    if (!failed.isEmpty()) {
+        check(false, QStringLiteral("load: ") + failed);
+        return -1;
+    }
     check(finished, QStringLiteral("finished signal"));
     return clock.elapsed();
 }

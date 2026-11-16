@@ -142,6 +142,8 @@ MainWindow::MainWindow(QWidget *parent)
         m_duration->setText(formatDuration(ms + 1));
     });
     connect(m_engine, &AudioEngine::finished, this, &MainWindow::playNext);
+    connect(m_engine, &AudioEngine::loaded, this, &MainWindow::trackLoaded);
+    connect(m_engine, &AudioEngine::loadFailed, this, &MainWindow::trackLoadFailed);
     connect(m_engine, &AudioEngine::errorOccurred, this,
             [this](const QString &msg) { statusBar()->showMessage(msg, 5000); });
 
@@ -820,25 +822,46 @@ void MainWindow::playRow(PlaylistPage *page, int row, bool start)
     m_playingPage = page;
     page->model()->setCurrent(t.uid);
 
-    if (!m_engine->load(t.path, t.startMs, t.endMs)) {
-        page->model()->setMissing(row, true);
-        statusBar()->showMessage(QStringLiteral("%1: %2").arg(t.fileName(), m_engine->lastError()), 5000);
-        // Skip to the next track, but don't spin through a playlist of dead files.
-        if (++m_failStreak < page->model()->rowCount())
-            QTimer::singleShot(0, this, &MainWindow::playNext);
-        else
-            m_failStreak = 0;
-        updateNowPlaying();
-        return;
-    }
-    m_failStreak = 0;
-    page->model()->setMissing(row, false);
+    // Opens in the background: trackLoaded() or trackLoadFailed() follows.
+    m_engine->load(t.path, t.startMs, t.endMs);
     if (start)
-        m_engine->play();
+        m_engine->play();   // starts as soon as the file is open
     updateNowPlaying();
     // The title on screen when it cannot be seen in the window (AIMP's OSD).
     if (TrackOsd::wanted(m_settings.osd.when, isMinimized(), isVisible(), isActiveWindow()))
-        m_osd->showTrack(page->model()->track(row), m_engine->durationMs());
+        m_osd->showTrack(t);
+}
+
+void MainWindow::trackLoaded()
+{
+    m_failStreak = 0;
+    if (!m_playingPage)
+        return;
+    PlaylistModel *model = m_playingPage->model();
+    const int row = model->currentRow();
+    if (row < 0)
+        return;
+    model->setMissing(row, false);
+    m_osd->refresh(model->track(row), m_engine->durationMs());   // the length, if the tags had none
+}
+
+void MainWindow::trackLoadFailed(const QString &error, bool wasPlaying)
+{
+    PlaylistModel *model = m_playingPage ? m_playingPage->model() : nullptr;
+    const int row = model ? model->currentRow() : -1;
+    if (row >= 0) {
+        model->setMissing(row, true);
+        statusBar()->showMessage(QStringLiteral("%1: %2").arg(model->track(row).fileName(), error), 5000);
+    } else {
+        statusBar()->showMessage(error, 5000);
+    }
+    // Skip to the next track, but don't spin through a playlist of dead files,
+    // and not when the user stopped or paused while it was opening.
+    if (model && wasPlaying && ++m_failStreak < model->rowCount())
+        QTimer::singleShot(0, this, &MainWindow::playNext);
+    else
+        m_failStreak = 0;
+    updateNowPlaying();
 }
 
 void MainWindow::playOrResume()

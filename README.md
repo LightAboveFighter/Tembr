@@ -7,6 +7,7 @@
 - **Аудиодвижок**: FFmpeg декодирует всё, что знает (MP3, FLAC, OGG/Opus, AAC/M4A, APE, WV, WMA, WAV, DSD…),
   miniaudio выводит через PipeWire / PulseAudio / ALSA / JACK (выбирается при запуске).
   Точная перемотка, громкость с перцептивной кривой, 5.1 сводится в стерео.
+  Файл открывается в фоне: медленный диск или молчащий поток не замораживают окно.
 - **Интерфейс**: тёмная тема с оранжевым выделением (или системная), слева крупная обложка
   и название трека, справа плейлисты, внизу панель управления.
 - **Интеграция с рабочим столом**:
@@ -201,7 +202,8 @@ tembr --play-pause | --stop | --next | --previous | --volume-up | --volume-down 
 
 ```sh
 ctest --test-dir build --output-on-failure   # плейлисты, пути Wine, AIMPPL4, поиск, клавиши GNOME,
-                                             # миграция (AIMP.ini, пути Android, MTP, ADB через фейковый adb)
+                                             # миграция (AIMP.ini, пути Android, MTP, ADB через фейковый adb),
+                                             # движок (на «нулевом» устройстве miniaudio, без звука)
 ./build/engine_smoke ~/Music/альбом          # воспроизведение на реальном устройстве (громкость 0)
 ./build/playlist_probe --search /media/Music ~/.wine/drive_c/users/$USER/AppData/Roaming/AIMP/PLS/*.aimppl4
                                              # сколько треков плейлистов найдено и сколько можно найти поиском
@@ -211,7 +213,7 @@ ctest --test-dir build --output-on-failure   # плейлисты, пути Wine
 
 ```
 src/
-  audio/AudioEngine       FFmpeg (поток декодера) → кольцевой буфер → miniaudio (аудиопоток)
+  audio/AudioEngine       FFmpeg (поток декодера: открытие и декодирование) → кольцевой буфер → miniaudio (аудиопоток)
   core/Track              запись плейлиста (для CUE: файл + диапазон startMs..endMs)
   core/MetadataReader     теги и техинфо через libavformat, обложки
   core/PlaylistIO         M3U/M3U8/PLS/XSPF/CUE/AIMPPL4
