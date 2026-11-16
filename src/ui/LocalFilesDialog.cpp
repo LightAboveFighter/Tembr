@@ -66,6 +66,7 @@ LocalFilesDialog::LocalFilesDialog(const LocalFilesSettings &current, QWidget *p
     m_watch->setToolTip(QStringLiteral("Новые и удалённые файлы появляются в списке сами"));
 
     auto *fromAimp = new QPushButton(QStringLiteral("Взять настройки из AIMP"));
+    m_aimpNote->setTextFormat(Qt::PlainText);   // folder paths
     m_aimpNote->setWordWrap(true);
     m_aimpNote->setForegroundRole(QPalette::PlaceholderText);
     LocalFilesSettings aimp;

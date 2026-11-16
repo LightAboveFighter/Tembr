@@ -47,6 +47,7 @@ QWidget *withBrowse(QLineEdit *edit, QWidget *parent, const QString &title)
 QLabel *noteLabel()
 {
     auto *l = new QLabel;
+    l->setTextFormat(Qt::PlainText);   // playlist and device names, paths, errors
     l->setWordWrap(true);
     l->setForegroundRole(QPalette::PlaceholderText);
     l->setTextInteractionFlags(Qt::TextSelectableByMouse);

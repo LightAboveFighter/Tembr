@@ -83,6 +83,7 @@ NowPlayingPanel::NowPlayingPanel(QWidget *parent)
     m_album->setFont(album);
 
     for (QLabel *l : {m_title, m_artist, m_album, m_details}) {
+        l->setTextFormat(Qt::PlainText);   // tags are text, never markup
         l->setWordWrap(true);
         l->setTextInteractionFlags(Qt::TextSelectableByMouse);
         l->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
