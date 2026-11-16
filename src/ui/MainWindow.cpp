@@ -1548,11 +1548,30 @@ void MainWindow::saveSession(SaveScope scope)
             playlists.append({page->model()->name(), page->model()->tracks()});
     }
     const int files = int(playlists.size());
-    if (const QStringList failed = SessionFiles::save(playlistDir(), playlists); !failed.isEmpty()) {
-        statusBar()->showMessage(QStringLiteral("Не удалось сохранить плейлисты: ") + failed.join(QStringLiteral("; ")), 10000);
-    }
-    if (scope == SaveScope::Everything)
+    const auto reportFailed = [this](const QStringList &failed) {
+        if (!failed.isEmpty())
+            statusBar()->showMessage(QStringLiteral("Не удалось сохранить плейлисты: ") + failed.join(QStringLiteral("; ")), 10000);
+    };
+    if (scope == SaveScope::Playlists) {
+        // Autosave: written in the background (100k tracks of XSPF take a
+        // second or two); the lists are shared copies, so nothing is
+        // copied here. One save at a time, in order.
+        auto *watcher = new QFutureWatcher<QStringList>(this);
+        connect(watcher, &QFutureWatcher<QStringList>::finished, this, [watcher, reportFailed] {
+            watcher->deleteLater();
+            reportFailed(watcher->result());
+        });
+        m_saveJob = QtConcurrent::run([previous = m_saveJob, dir = playlistDir(), playlists]() mutable {
+            previous.waitForFinished();
+            return SessionFiles::save(dir, playlists);
+        });
+        watcher->setFuture(m_saveJob);
+    } else {
+        // Quitting or logging out: done before going on.
+        m_saveJob.waitForFinished();
+        reportFailed(SessionFiles::save(playlistDir(), playlists));
         m_localFiles->saveCache(m_localPage->model()->tracks());
+    }
 
     QSettings s;
     s.setValue(QStringLiteral("session/version"), 2);

@@ -150,6 +150,7 @@ private:
     QString m_artFile;          // cover exported for MPRIS clients
     int m_coverJob = 0;         // the cover read last; older results are dropped
     int m_failStreak = 0;       // consecutive unplayable tracks skipped
+    QFuture<QStringList> m_saveJob;   // autosave being written
     QFuture<QString> m_hotkeyJob;   // background registration at startup
     bool m_hotkeysReleased = false;
     QTimer *m_autosave = nullptr;
