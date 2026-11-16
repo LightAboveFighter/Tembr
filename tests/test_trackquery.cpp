@@ -72,6 +72,20 @@ private slots:
         QVERIFY(TrackQuery::parse(QStringLiteral("исполнитель:кино")).matches(kino));
         QVERIFY(TrackQuery::parse(QStringLiteral("елка")).matches(kino));          // ё == е
         QVERIFY(TrackQuery::parse(QStringLiteral("альбом:ЧЕРНЫЙ")).matches(kino));
+        QVERIFY(TrackQuery::parse(QStringLiteral("ЁЛКА")).matches(kino));
+        QVERIFY(TrackQuery::parse(QStringLiteral("кИнО")).matches(kino));
+        QVERIFY(TrackQuery::parse(QStringLiteral("QUEEN")).matches(queen));
+        QVERIFY(!TrackQuery::parse(QStringLiteral("елки")).matches(kino));
+    }
+
+    // Without tags the file name is searched (not the folders above it).
+    void fileNameWithoutTags()
+    {
+        Track t = Track::fromPath(QStringLiteral("/music/Rock/Some Ёлка Song.mp3"));
+        QVERIFY(TrackQuery::parse(QStringLiteral("some елка")).matches(t));
+        QVERIFY(TrackQuery::parse(QStringLiteral("SONG.MP3")).matches(t));
+        QVERIFY(!TrackQuery::parse(QStringLiteral("rock")).matches(t));
+        QVERIFY(TrackQuery::parse(QStringLiteral("path:rock")).matches(t));
     }
 
     void defaultFieldFromPicker()

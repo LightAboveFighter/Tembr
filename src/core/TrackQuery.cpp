@@ -13,6 +13,24 @@ QString fold(QString s)
     return s;
 }
 
+// fold(hay).contains(folded), without a folded copy of every field of every
+// track on each keystroke: Qt's case-insensitive search folds as it goes.
+// Only text with "ё" needs the copy (it is searched as "е").
+bool containsFolded(QStringView hay, const QString &folded)
+{
+    if (hay.contains(QChar(0x0451)) || hay.contains(QChar(0x0401)))
+        return fold(hay.toString()).contains(folded);
+    return hay.contains(folded, Qt::CaseInsensitive);
+}
+
+// Track::fileName() without a QFileInfo for every track on every keystroke.
+QStringView fileNameOf(const Track &t)
+{
+    if (t.isUrl())
+        return t.path;
+    return QStringView(t.path).mid(t.path.lastIndexOf(QLatin1Char('/')) + 1);
+}
+
 const QHash<QString, TrackQuery::Field> &fieldAliases()
 {
     using F = TrackQuery::Field;
@@ -123,14 +141,14 @@ bool TrackQuery::termMatches(const Term &term, const Track &t)
         return y >= term.yearFrom && y <= term.yearTo;
     }
     if (term.field != Field::Any)
-        return fold(fieldValue(term.field, t)).contains(term.text);
+        return containsFolded(fieldValue(term.field, t), term.text);
 
     for (Field f : {Field::Title, Field::Artist, Field::Album, Field::AlbumArtist, Field::Genre,
                     Field::Year, Field::Composer}) {
-        if (fold(fieldValue(f, t)).contains(term.text))
+        if (containsFolded(fieldValue(f, t), term.text))
             return true;
     }
-    return fold(t.fileName()).contains(term.text);
+    return containsFolded(fileNameOf(t), term.text);
 }
 
 bool TrackQuery::matches(const Track &t) const
