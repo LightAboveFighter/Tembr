@@ -159,6 +159,9 @@ struct Decoder
         return true;
     }
 
+    // An I/O error (network, disk) rather than the end of the file.
+    bool ioFailed() const { return fmt && fmt->pb && fmt->pb->error < 0 && fmt->pb->error != AVERROR_EOF; }
+
     // (Re)creates the resampler when the input format changes.
     bool ensureResampler(const AVFrame *f, int outRate)
     {
@@ -231,6 +234,7 @@ struct Session
     RingBuffer ring;
     bool decoderEof = false;              // all audio of the range is in `ring`
     std::atomic<bool> reachedEnd{false};  // set by the audio thread
+    std::atomic<bool> readFailed{false};  // the input broke off (network, disk)
     std::atomic<qint64> playFrame{0};     // absolute index of the next frame to be heard
     std::atomic<qint64> seekRequest{-1};  // absolute frame, consumed by the decoder thread
 
@@ -335,8 +339,11 @@ struct Session
             return;
         }
         if (r < 0) {                       // end of file or read error: drain
+            if (!quit && dec.ioFailed())
+                readFailed = true;
             avcodec_send_packet(dec.codec, nullptr);
             receiveFrames();
+            drainResampler();
             inputDone = true;
             return;
         }
@@ -369,6 +376,21 @@ struct Session
         auto *outPtr = reinterpret_cast<uint8_t *>(scratch.data());
         const int n = swr_convert(dec.swr, &outPtr, maxOut, const_cast<const uint8_t **>(f->extended_data),
                                   f->nb_samples);
+        if (n > 0)
+            append(scratch.data(), n);
+    }
+
+    // The last few milliseconds the resampler still holds at the end of the file.
+    void drainResampler()
+    {
+        if (inputDone || !dec.swr || writeFrame < 0)
+            return;
+        const int maxOut = swr_get_out_samples(dec.swr, 0);
+        if (maxOut <= 0)
+            return;
+        scratch.resize(size_t(maxOut) * kChannels);
+        auto *outPtr = reinterpret_cast<uint8_t *>(scratch.data());
+        const int n = swr_convert(dec.swr, &outPtr, maxOut, nullptr, 0);
         if (n > 0)
             append(scratch.data(), n);
     }
@@ -748,6 +770,10 @@ void AudioEngine::poll()
     if (!s || !d->opened || m_state != State::Playing)
         return;
     emit positionChanged(positionMs());
+    if (d->session == s && s->readFailed.exchange(false)) {
+        m_lastError = QStringLiteral("Чтение прервалось: файл или поток недоступен");
+        emit errorOccurred(m_lastError);
+    }
     if (d->session == s && m_state == State::Playing && s->reachedEnd.exchange(false)) {
         ma_device_stop(&d->device);
         d->atEnd = true;
