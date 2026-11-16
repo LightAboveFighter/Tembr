@@ -264,11 +264,26 @@ void PlaylistPage::setReadOnly(bool readOnly)
     m_view->viewport()->setAcceptDrops(!readOnly);
 }
 
+// Rows are selected whole (SelectRows), so the ranges give them directly;
+// QItemSelectionModel::selectedRows() checks every row against every range,
+// which is quadratic for a scattered selection.
+static QList<int> selectedProxyRows(const QItemSelectionModel *sel)
+{
+    QList<int> rows;
+    for (const QItemSelectionRange &r : sel->selection()) {
+        for (int row = r.top(); row <= r.bottom(); ++row)
+            rows.append(row);
+    }
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    return rows;
+}
+
 QList<int> PlaylistPage::selectedSourceRows() const
 {
     QList<int> rows;
-    for (const QModelIndex &idx : m_view->selectionModel()->selectedRows())
-        rows.append(m_proxy->mapToSource(idx).row());
+    for (int row : selectedProxyRows(m_view->selectionModel()))
+        rows.append(m_proxy->mapToSource(m_proxy->index(row, 0)).row());
     std::sort(rows.begin(), rows.end());
     return rows;
 }
@@ -289,9 +304,8 @@ void PlaylistPage::removeSelected()
     const QList<int> rows = selectedSourceRows();
     if (rows.isEmpty())
         return;
-    int nextProxyRow = m_proxy->rowCount();
-    for (const QModelIndex &idx : m_view->selectionModel()->selectedRows())
-        nextProxyRow = std::min(nextProxyRow, idx.row());
+    const QList<int> proxyRows = selectedProxyRows(m_view->selectionModel());
+    const int nextProxyRow = proxyRows.isEmpty() ? m_proxy->rowCount() : proxyRows.first();
     m_model->removeRowList(rows);
     const int count = m_proxy->rowCount();
     if (count > 0) {
