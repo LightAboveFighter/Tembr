@@ -161,6 +161,43 @@ private slots:
         QCOMPARE(uids.size(), 4);
     }
 
+    // A music folder that is gone or empty (a drive not mounted) keeps its
+    // tracks, marked missing, with their dates and tags.
+    void unmountedFolderKeepsItsTracks()
+    {
+        QTemporaryDir music, other;
+        writeFile(music.filePath(QStringLiteral("x/a.mp3")), "aaaa");
+        writeFile(other.filePath(QStringLiteral("b.mp3")), "bbbb");
+        const QString drive = music.filePath(QStringLiteral("x"));
+        LocalFilesSettings s;
+        s.folders = {drive, other.path()};
+        TrackList known = LocalLibrary::scan(s, {});
+        QCOMPARE(known.size(), 2);
+        for (Track &t : known) {
+            t.scanned = true;
+            t.title = QStringLiteral("tagged");
+        }
+        QVERIFY(QFile::remove(music.filePath(QStringLiteral("x/a.mp3"))));   // the mount point stays, empty
+        TrackList t = LocalLibrary::scan(s, known);
+        QCOMPARE(t.size(), 2);
+        const auto a = std::find_if(t.cbegin(), t.cend(), [&](const Track &x) { return x.path.startsWith(drive); });
+        QVERIFY(a != t.cend());
+        QVERIFY(a->missing);
+        QCOMPARE(a->uid, known[0].uid);
+        QCOMPARE(a->addedMs, known[0].addedMs);
+        QCOMPARE(a->title, QStringLiteral("tagged"));
+
+        QVERIFY(QDir(drive).removeRecursively());   // no mount point at all
+        t = LocalLibrary::scan(s, known);
+        QCOMPARE(t.size(), 2);
+
+        writeFile(music.filePath(QStringLiteral("x/a.mp3")), "aaaa");   // mounted again
+        t = LocalLibrary::scan(s, t);
+        QCOMPARE(t.size(), 2);
+        for (const Track &x : t)
+            QVERIFY(!x.missing);
+    }
+
     // The list is replaced when files come or go, and also when a file
     // changed in place (same entries, new tags to read).
     void sameListOnlyWhenNothingChanged()
