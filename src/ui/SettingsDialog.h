@@ -14,7 +14,12 @@ class HotkeyEdit;
 
 struct AppSettings
 {
+    // What the search field filters: both lists on screen, or only the
+    // active one (the other stays whole).
+    enum class SearchScope { BothLists, ActiveList };
+
     Theme::Kind theme = Theme::Kind::Dark;
+    SearchScope searchScope = SearchScope::BothLists;
     bool trayIcon = true;
     bool closeToTray = false;
     GlobalHotkeys::Bindings hotkeys;
@@ -36,6 +41,7 @@ public:
 
 private:
     QComboBox *m_theme;
+    QComboBox *m_searchScope;
     QCheckBox *m_tray;
     QCheckBox *m_closeToTray;
     QCheckBox *m_releaseKeys;

@@ -31,6 +31,9 @@ AppSettings AppSettings::load()
     QSettings s;
     AppSettings a;
     a.theme = Theme::fromString(s.value(QStringLiteral("ui/theme"), QStringLiteral("dark")).toString());
+    a.searchScope = s.value(QStringLiteral("ui/searchScope")).toString() == QLatin1String("active")
+                        ? SearchScope::ActiveList
+                        : SearchScope::BothLists;
     a.trayIcon = s.value(QStringLiteral("ui/trayIcon"), true).toBool();
     a.closeToTray = s.value(QStringLiteral("ui/closeToTray"), false).toBool();
     a.hotkeys = GlobalHotkeys::load(&a.droppedHotkeys);
@@ -47,6 +50,8 @@ void AppSettings::save() const
 {
     QSettings s;
     s.setValue(QStringLiteral("ui/theme"), Theme::toString(theme));
+    s.setValue(QStringLiteral("ui/searchScope"),
+               searchScope == SearchScope::ActiveList ? QStringLiteral("active") : QStringLiteral("both"));
     s.setValue(QStringLiteral("ui/trayIcon"), trayIcon);
     s.setValue(QStringLiteral("ui/closeToTray"), closeToTray);
     s.setValue(QStringLiteral("hotkeys/releaseOnExit"), releaseHotkeysOnExit);
@@ -71,6 +76,22 @@ SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
     m_theme->addItem(QStringLiteral("Системная"), Theme::toString(Theme::Kind::System));
     m_theme->setCurrentIndex(current.theme == Theme::Kind::Dark ? 0 : 1);
     lookForm->addRow(QStringLiteral("Тема:"), m_theme);
+
+    // --- Search
+    auto *search = new QGroupBox(QStringLiteral("Поиск"));
+    auto *searchForm = new QFormLayout(search);
+    m_searchScope = new QComboBox;
+    m_searchScope->addItem(QStringLiteral("Оба списка сразу"), int(AppSettings::SearchScope::BothLists));
+    m_searchScope->addItem(QStringLiteral("Только активный список"), int(AppSettings::SearchScope::ActiveList));
+    m_searchScope->setCurrentIndex(m_searchScope->findData(int(current.searchScope)));
+    searchForm->addRow(QStringLiteral("Поиск фильтрует:"), m_searchScope);
+    auto *searchNote = new QLabel(QStringLiteral(
+        "Активный список — тот, в котором вы работали последним (его заголовок выделен). "
+        "Enter в поле поиска включает первый найденный трек активного списка, а если в нём ничего "
+        "не нашлось — другого."));
+    searchNote->setWordWrap(true);
+    searchNote->setForegroundRole(QPalette::PlaceholderText);
+    searchForm->addRow(searchNote);
 
     // --- Tray
     auto *tray = new QGroupBox(QStringLiteral("Значок в области уведомлений"));
@@ -208,7 +229,7 @@ SettingsDialog::SettingsDialog(const AppSettings &current, QWidget *parent)
         l->addStretch();
         return w;
     };
-    auto *general = page({look, tray, install});
+    auto *general = page({look, search, tray, install});
     general->layout()->setAlignment(install, Qt::AlignLeft);
     auto *tabs = new QTabWidget;
     tabs->addTab(general, QStringLiteral("Основные"));
@@ -251,6 +272,7 @@ AppSettings SettingsDialog::values() const
 {
     AppSettings a;
     a.theme = Theme::fromString(m_theme->currentData().toString());
+    a.searchScope = AppSettings::SearchScope(m_searchScope->currentData().toInt());
     a.trayIcon = m_tray->isChecked();
     a.closeToTray = m_tray->isChecked() && m_closeToTray->isChecked();
     a.releaseHotkeysOnExit = m_releaseKeys->isChecked();
