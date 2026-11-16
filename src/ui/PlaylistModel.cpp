@@ -183,6 +183,7 @@ void PlaylistModel::sort(int column, Qt::SortOrder order)
 
 void PlaylistModel::setTracks(const TrackList &tracks)
 {
+    rememberCurrent();
     beginResetModel();
     m_tracks = tracks;
     for (Track &t : m_tracks) {
@@ -191,6 +192,7 @@ void PlaylistModel::setTracks(const TrackList &tracks)
     }
     rebuildIndex();
     endResetModel();
+    checkCurrent();
 
     TrackList toScan;
     for (const Track &t : std::as_const(m_tracks)) {
@@ -237,6 +239,9 @@ void PlaylistModel::removeRowList(QList<int> rows)
     rows.erase(std::remove_if(rows.begin(), rows.end(),
                               [this](int r) { return r < 0 || r >= m_tracks.size(); }),
                rows.end());
+    if (rows.isEmpty())
+        return;
+    rememberCurrent();
     // Remove contiguous runs at once (rows are in descending order).
     for (int i = 0; i < rows.size();) {
         int j = i;
@@ -249,6 +254,7 @@ void PlaylistModel::removeRowList(QList<int> rows)
         i = j + 1;
     }
     rebuildIndex();
+    checkCurrent();
     emit contentsChanged();
 }
 
@@ -266,10 +272,12 @@ void PlaylistModel::clear()
 {
     if (m_readOnly)
         return;
+    rememberCurrent();
     beginResetModel();
     m_tracks.clear();
     m_rowByUid.clear();
     endResetModel();
+    checkCurrent();
     emit contentsChanged();
 }
 
@@ -311,6 +319,10 @@ void PlaylistModel::setCurrent(quint64 uid)
 {
     if (uid == m_currentUid)
         return;
+    m_detached = Track();
+    m_after.clear();
+    m_before.clear();
+    m_detachedSlot = -1;
     const int old = currentRow();
     m_currentUid = uid;
     emitRowChanged(old);
@@ -356,6 +368,8 @@ void PlaylistModel::applyScanned(const Track &t)
     const int row = rowOfUid(t.uid);
     if (row < 0)
         return;   // removed while being scanned
+    if (m_tracks.at(row).path != t.path)
+        return;   // pointed elsewhere meanwhile ("find moved files"): not this file's tags
     m_tracks[row] = t;
     emitRowChanged(row);
 }
@@ -372,4 +386,79 @@ void PlaylistModel::emitRowChanged(int row)
 {
     if (row >= 0 && row < m_tracks.size())
         emit dataChanged(index(row, 0), index(row, ColumnCount - 1));
+}
+
+// --- Current track whose row went away -------------------------------------------
+
+void PlaylistModel::rememberCurrent()
+{
+    m_checkCurrent = false;
+    const int row = currentRow();
+    if (row < 0)
+        return;   // none, or already detached (its context stays as it was)
+    m_checkCurrent = true;
+    m_detached = m_tracks.at(row);
+    m_detachedSlot = row;
+    m_after.clear();
+    m_before.clear();
+    for (int r = row + 1; r < m_tracks.size(); ++r)
+        m_after.append(m_tracks.at(r).uid);
+    for (int r = row - 1; r >= 0; --r)
+        m_before.append(m_tracks.at(r).uid);
+}
+
+void PlaylistModel::checkCurrent()
+{
+    if (!m_checkCurrent)
+        return;
+    m_checkCurrent = false;
+    if (currentRow() >= 0) {   // still here: other rows went away
+        m_detached = Track();
+        m_after.clear();
+        m_before.clear();
+        m_detachedSlot = -1;
+        return;
+    }
+    emit currentDetached();
+}
+
+const Track *PlaylistModel::currentTrack() const
+{
+    if (m_currentUid == 0)
+        return nullptr;
+    const int row = currentRow();
+    if (row >= 0)
+        return &m_tracks.at(row);
+    return m_detached.uid == m_currentUid ? &m_detached : nullptr;
+}
+
+int PlaylistModel::nextRow() const
+{
+    const int row = currentRow();
+    if (row >= 0)
+        return row + 1 < m_tracks.size() ? row + 1 : -1;
+    if (!isCurrentDetached())
+        return -1;
+    for (quint64 uid : m_after) {
+        const int r = rowOfUid(uid);
+        if (r >= 0)
+            return r;
+    }
+    return m_detachedSlot >= 0 && m_detachedSlot < m_tracks.size() ? m_detachedSlot : -1;
+}
+
+int PlaylistModel::previousRow() const
+{
+    const int row = currentRow();
+    if (row >= 0)
+        return row - 1;
+    if (!isCurrentDetached())
+        return -1;
+    for (quint64 uid : m_before) {
+        const int r = rowOfUid(uid);
+        if (r >= 0)
+            return r;
+    }
+    const int slot = qMin(m_detachedSlot - 1, int(m_tracks.size()) - 1);
+    return slot >= 0 ? slot : -1;
 }

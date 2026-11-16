@@ -9,6 +9,18 @@ namespace Migration {
 
 namespace {
 
+// A path inside a storage: ".." can never climb out of it (nor out of the
+// folder tracks are copied to, which keeps the same relative path).
+QString insideStorage(const QString &path)
+{
+    QString rel = QDir::cleanPath(path);
+    while (rel.startsWith(QLatin1Char('/')))
+        rel.remove(0, 1);
+    while (rel == QLatin1String("..") || rel.startsWith(QLatin1String("../")))
+        rel.remove(0, qMin(3, int(rel.size())));
+    return rel == QLatin1String(".") ? QString() : rel;
+}
+
 int storageByKey(const QList<PhoneStorage> &storages, const QString &key)
 {
     for (int i = 0; i < storages.size(); ++i) {
@@ -27,12 +39,12 @@ bool mapAbsolute(const QString &path, const QList<PhoneStorage> &storages, Phone
         QStringLiteral("^/(?:storage|mnt/media_rw)/([0-9A-Fa-f]{4}-[0-9A-Fa-f]{4})(?:/(.*))?$"));
     if (auto m = primary.match(path); m.hasMatch()) {
         ref.storage = storageByKey(storages, QStringLiteral("primary"));
-        ref.rel = m.captured(1);
+        ref.rel = insideStorage(m.captured(1));
         return true;
     }
     if (auto m = volume.match(path); m.hasMatch()) {
         ref.storage = storageByKey(storages, m.captured(1));   // -1 over MTP: try every storage
-        ref.rel = m.captured(2);
+        ref.rel = insideStorage(m.captured(2));
         return true;
     }
     return false;
@@ -79,7 +91,7 @@ PhoneRef mapPhoneEntry(const QString &entryIn, const QList<PhoneStorage> &storag
             return ref;
         }
         ref.storage = storageByKey(storages, docId.left(colon));
-        ref.rel = docId.mid(colon + 1);
+        ref.rel = insideStorage(docId.mid(colon + 1));
         return ref;
     }
     if (entry.startsWith(QLatin1String("file:"), Qt::CaseInsensitive))
@@ -94,16 +106,13 @@ PhoneRef mapPhoneEntry(const QString &entryIn, const QList<PhoneStorage> &storag
     if (entry.startsWith(QLatin1Char('/'))) {
         if (!mapAbsolute(QDir::cleanPath(entry), storages, ref)) {
             ref.storage = -1;          // some other absolute path: try it on every storage
-            ref.rel = QDir::cleanPath(entry).mid(1);
+            ref.rel = insideStorage(entry);
         }
         return ref;
     }
     // Relative to the playlist (what AIMP for Android exports).
-    QString rel = QDir::cleanPath(playlistDir.isEmpty() ? entry : playlistDir + QLatin1Char('/') + entry);
-    while (rel.startsWith(QLatin1String("../")))
-        rel.remove(0, 3);
     ref.storage = playlistStorage;
-    ref.rel = rel;
+    ref.rel = insideStorage(playlistDir.isEmpty() ? entry : playlistDir + QLatin1Char('/') + entry);
     return ref;
 }
 
@@ -167,8 +176,11 @@ bool importPhonePlaylist(PhoneSource &source, const PhonePlaylistFile &file, con
         }
         // 2) Copy it from the phone.
         if (localPath.isEmpty() && !options.copyMissingTo.isEmpty()) {
-            const QString dest = QDir(options.copyMissingTo).filePath(copyTarget(ref.rel));
-            if (QFileInfo(dest).size() > 0) {
+            const QString dest = QDir::cleanPath(QDir(options.copyMissingTo).filePath(copyTarget(ref.rel)));
+            const QString folder = QDir::cleanPath(options.copyMissingTo);
+            if (ref.rel.isEmpty() || !dest.startsWith(folder.endsWith(QLatin1Char('/')) ? folder : folder + QLatin1Char('/'))) {
+                local.errors << QStringLiteral("%1: недопустимый путь, не копирую").arg(ref.raw);
+            } else if (QFileInfo(dest).size() > 0) {
                 localPath = dest;   // copied before (same file in another playlist)
                 ++local.copied;
             } else {

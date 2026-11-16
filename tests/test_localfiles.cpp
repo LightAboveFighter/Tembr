@@ -129,8 +129,50 @@ private slots:
         QCOMPARE(t[0].title, QStringLiteral("tagged"));
         QCOMPARE(t[1].uid, known[1].uid);   // same entry...
         QVERIFY(!t[1].scanned);              // ...tags read again
+        QCOMPARE(t[1].fileSize, 10);         // marked changed
         QVERIFY(!t[2].scanned);
         QVERIFY(t[2].uid != known[0].uid && t[2].uid != known[1].uid);
+    }
+
+    // The list is replaced when files come or go, and also when a file
+    // changed in place (same entries, new tags to read).
+    void sameListOnlyWhenNothingChanged()
+    {
+        QTemporaryDir music;
+        writeFile(music.filePath(QStringLiteral("a.mp3")), "aaaa");
+        writeFile(music.filePath(QStringLiteral("b.mp3")), "bbbb");
+        LocalFilesSettings s;
+        s.folders = {music.path()};
+        TrackList shown = LocalLibrary::scan(s, {});
+        QVERIFY(LocalLibrary::sameList(shown, LocalLibrary::scan(s, shown)));   // tags not read yet: kept
+        for (Track &t : shown) {
+            t.scanned = true;
+            t.fileSize = 4;
+        }
+        QVERIFY(LocalLibrary::sameList(shown, LocalLibrary::scan(s, shown)));
+        writeFile(music.filePath(QStringLiteral("b.mp3")), "retagged");
+        QVERIFY(!LocalLibrary::sameList(shown, LocalLibrary::scan(s, shown)));
+    }
+
+    // A rescan asked for while one runs follows it, from the list as it is
+    // after the first result (the owner rescans on changedOnDisk).
+    void rescanDuringScanFollowsIt()
+    {
+        QTemporaryDir music;
+        writeFile(music.filePath(QStringLiteral("a.mp3")), "x");
+        LocalFiles lf;
+        LocalFilesSettings s;
+        s.folders = {music.path()};
+        s.watch = false;
+        lf.setSettings(s);
+        QSignalSpy scanned(&lf, &LocalFiles::scanned);
+        QSignalSpy again(&lf, &LocalFiles::changedOnDisk);
+        QSignalSpy scanning(&lf, &LocalFiles::scanningChanged);
+        lf.rescan({});
+        lf.rescan({});   // still running: follows it
+        QVERIFY(scanned.wait(5000));
+        QCOMPARE(again.count(), 1);
+        QTRY_VERIFY(!scanning.isEmpty() && !scanning.last().at(0).toBool());
     }
 
     void followsChangesOnDisk()

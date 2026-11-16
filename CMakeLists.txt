@@ -35,6 +35,7 @@ add_library(tembr_core STATIC
     src/core/Relocator.h src/core/Relocator.cpp
     src/core/LocalFiles.h src/core/LocalFiles.cpp
     src/core/TrackQuery.h src/core/TrackQuery.cpp
+    src/core/MediaOpen.h src/core/MediaOpen.cpp
     src/audio/AudioEngine.h src/audio/AudioEngine.cpp
     src/platform/Mpris.h src/platform/Mpris.cpp
     src/platform/GlobalHotkeys.h src/platform/GlobalHotkeys.cpp
@@ -78,7 +79,7 @@ install(FILES data/tembr.svg DESTINATION share/icons/hicolor/scalable/apps)
 if(TEMBR_BUILD_TESTS)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     enable_testing()
-    foreach(t test_playlistio test_trackquery test_hotkeys test_localfiles test_migration)
+    foreach(t test_playlistio test_trackquery test_hotkeys test_localfiles test_migration test_mediaopen)
         add_executable(${t} tests/${t}.cpp)
         target_link_libraries(${t} PRIVATE tembr_core Qt6::Test)
         add_test(NAME ${t} COMMAND ${t})
@@ -92,6 +93,11 @@ if(TEMBR_BUILD_TESTS)
     target_link_libraries(test_osd PRIVATE tembr_core Qt6::Widgets Qt6::Test)
     add_test(NAME test_osd COMMAND test_osd)
     set_tests_properties(test_osd PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(test_playlistmodel tests/test_playlistmodel.cpp src/ui/PlaylistModel.cpp src/ui/PlaylistModel.h
+                   src/ui/Icons.cpp src/ui/Theme.cpp)
+    target_link_libraries(test_playlistmodel PRIVATE tembr_core Qt6::Widgets Qt6::Test)
+    add_test(NAME test_playlistmodel COMMAND test_playlistmodel)
+    set_tests_properties(test_playlistmodel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     # Manual tools (see the file headers).
     add_executable(playlist_probe tests/playlist_probe.cpp)

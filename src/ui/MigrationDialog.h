@@ -60,6 +60,7 @@ private:
 
     bool phoneMode() const;
     void refreshSources();
+    void showSources(const QList<Migration::AimpProfile> &profiles, const Migration::PhoneDiscovery &phones);
     void findPlaylists();
     void showItems(const QList<Item> &items);
     void startImport();
@@ -91,5 +92,6 @@ private:
     QList<Item> m_items;
     MigrationResult m_result;
     bool m_busy = false;
+    bool m_discovering = false;   // looking for AIMP and phones: closing needs no cancel
     std::shared_ptr<std::atomic<bool>> m_cancel;
 };

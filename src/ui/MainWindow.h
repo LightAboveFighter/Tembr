@@ -8,6 +8,7 @@
 #include <QImage>
 #include <QMainWindow>
 #include <QPointer>
+#include <QTimer>
 
 class QAction;
 class QComboBox;
@@ -71,6 +72,8 @@ private:
     void changeVolume(int delta);
     void showTrackInfo();
     void updateNowPlaying();
+    void loadCover(const Track &t);
+    void setCover(int job, const QImage &image, const QString &artFile);
     void updateNavigation();
     void updateStats();
     void applySearch();
@@ -86,7 +89,12 @@ private:
     void rememberMoves(const QList<QPair<QString, QString>> &moves);
     void offerToFindMoved(int missing, int total);
 
-    void saveSession();
+    // Playlists, tab layout and player state; with the Local files cache
+    // (large) only when the player closes. Writes every file before
+    // removing ones no longer used, so a failure never loses playlists.
+    enum class SaveScope { Playlists, Everything };
+    void saveSession(SaveScope scope = SaveScope::Everything);
+    void scheduleSave();   // soon after a change, so a crash or kill loses little
     void restoreSession();
 
     AudioEngine *m_engine;
@@ -126,7 +134,10 @@ private:
     QString m_coverPath;        // track whose cover is shown
     QImage m_coverImage;
     QString m_artFile;          // cover exported for MPRIS clients
+    int m_coverJob = 0;         // the cover read last; older results are dropped
     int m_failStreak = 0;       // consecutive unplayable tracks skipped
     QFuture<QString> m_hotkeyJob;   // background registration at startup
     bool m_hotkeysReleased = false;
+    QTimer *m_autosave = nullptr;
+    bool m_finalSaveDone = false;   // saved on close: not again on quit
 };

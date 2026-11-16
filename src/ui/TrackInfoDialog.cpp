@@ -47,6 +47,7 @@ TrackInfoDialog::TrackInfoDialog(const Track &track, QWidget *parent)
         if (value.isEmpty() || value == QLatin1String("0"))
             return;
         auto *v = new QLabel(value);
+        v->setTextFormat(Qt::PlainText);   // tag values and paths, never markup
         v->setTextInteractionFlags(Qt::TextSelectableByMouse);
         v->setWordWrap(true);
         form->addRow(label + QLatin1Char(':'), v);

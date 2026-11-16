@@ -236,6 +236,37 @@ private slots:
         QCOMPARE(map(QStringLiteral("content://media/external/audio/media/42")).kind, PhoneRef::Unmappable);
         QCOMPARE(map(QStringLiteral("https://radio.example/stream")).kind, PhoneRef::Url);
         QCOMPARE(map(QStringLiteral("file:///storage/emulated/0/Music/d%20e.mp3")).rel, QStringLiteral("Music/d e.mp3"));
+
+        // ".." never climbs out of the storage, whatever form the entry has.
+        QCOMPARE(map(QStringLiteral("content://com.android.externalstorage.documents/document/primary%3A..%2F..%2Fetc%2Fx.mp3")).rel,
+                 QStringLiteral("etc/x.mp3"));
+        QCOMPARE(map(QStringLiteral("content://com.android.externalstorage.documents/document/primary%3AMusic%2F..%2F..%2Fa.mp3")).rel,
+                 QStringLiteral("a.mp3"));
+        QCOMPARE(map(QStringLiteral("/sdcard/../../etc/x.mp3")).rel, QStringLiteral("etc/x.mp3"));
+        QCOMPARE(map(QStringLiteral("../../../../x.mp3")).rel, QStringLiteral("x.mp3"));
+    }
+
+    // A playlist written to escape: the entry points outside the phone folder,
+    // and copying must neither read from nor write outside the given folders.
+    void importStaysInsideFolders()
+    {
+        QTemporaryDir root;
+        const QDir r(root.path());
+        writeFile(r.filePath(QStringLiteral("src/loot/payload.mp3")), "outside the phone");
+        writeFile(r.filePath(QStringLiteral("src/phone/Download/list.m3u8")),
+                  "#EXTM3U\ncontent://com.android.externalstorage.documents/document/primary%3A..%2Floot%2Fpayload.mp3\n");
+        QDir().mkpath(r.filePath(QStringLiteral("pc/Music")));
+
+        const auto source = Migration::folderSource(r.filePath(QStringLiteral("src/phone")));
+        Migration::PhoneImportOptions opt;
+        opt.copyMissingTo = r.filePath(QStringLiteral("pc/Music"));
+        PlaylistData data;
+        Migration::PhoneImportStats stats;
+        QVERIFY(Migration::importPhonePlaylist(*source, {0, QStringLiteral("Download/list.m3u8")}, opt, data, stats));
+        QCOMPARE(stats.copied, 0);
+        QCOMPARE(stats.missing, 1);
+        QVERIFY(!QFileInfo::exists(r.filePath(QStringLiteral("pc/loot/payload.mp3"))));
+        QVERIFY(!QFileInfo::exists(r.filePath(QStringLiteral("pc/Music/loot/payload.mp3"))));
     }
 
     // A phone (or its copy) as a folder: playlist in "Music/Playlists " (with the

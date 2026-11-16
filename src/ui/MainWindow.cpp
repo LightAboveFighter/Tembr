@@ -166,6 +166,16 @@ MainWindow::MainWindow(QWidget *parent)
     registerHotkeys();
     // Also on logout and other ways out that skip closeEvent.
     connect(qApp, &QCoreApplication::aboutToQuit, this, &MainWindow::releaseHotkeys);
+    connect(qApp, &QCoreApplication::aboutToQuit, this, [this] {
+        if (!m_finalSaveDone)
+            saveSession();
+    });
+    connect(qApp, &QGuiApplication::commitDataRequest, this, [this] { saveSession(); });   // desktop logout
+
+    m_autosave = new QTimer(this);
+    m_autosave->setSingleShot(true);
+    m_autosave->setInterval(3000);
+    connect(m_autosave, &QTimer::timeout, this, [this] { saveSession(SaveScope::Playlists); });
 
     if (!m_settings.droppedHotkeys.isEmpty()) {
         m_settings.save();   // forget them for good
@@ -322,6 +332,7 @@ void MainWindow::buildUi()
     m_tabs->setDocumentMode(true);
     m_tabs->tabBar()->setExpanding(false);
     connect(m_tabs, &QTabWidget::tabCloseRequested, this, &MainWindow::closePage);
+    connect(m_tabs->tabBar(), &QTabBar::tabMoved, this, &MainWindow::scheduleSave);
     connect(m_tabs, &QTabWidget::currentChanged, this, [this] {
         applySearch();
         updateStats();
@@ -590,6 +601,13 @@ PlaylistPage *MainWindow::addPage(const QString &name)
         if (playFirst)
             playRow(page, row);
     });
+    // Ordinary playlists are saved soon after they change (also when sorted).
+    const auto changed = [this, page] {
+        if (page != m_localPage)
+            scheduleSave();
+    };
+    connect(page->model(), &PlaylistModel::contentsChanged, this, changed);
+    connect(page->model(), &QAbstractItemModel::layoutChanged, this, changed);
     connect(page, &PlaylistPage::statsChanged, this, [this, page] {
         if (page == currentPage())
             updateStats();
@@ -599,6 +617,16 @@ PlaylistPage *MainWindow::addPage(const QString &name)
     connect(page, &PlaylistPage::contextMenuRequested, this, &MainWindow::showContextMenu);
     connect(page->view()->horizontalHeader(), &QWidget::customContextMenuRequested, this,
             [this, page](const QPoint &p) { showHeaderMenu(page->view()->horizontalHeader()->mapToGlobal(p)); });
+    connect(page->model(), &PlaylistModel::currentDetached, this, [this, page] {
+        if (page != m_playingPage)
+            return;
+        if (m_engine->state() == AudioEngine::State::Stopped) {
+            page->model()->setCurrent(0);   // nothing playing: nothing to go on from
+            updateNowPlaying();
+        } else {
+            updateNavigation();   // plays on, shown as before; "next" is decided by the model
+        }
+    });
     connect(page->model(), &QAbstractItemModel::dataChanged, this,
             [this, page](const QModelIndex &tl, const QModelIndex &br) {
                 const int cur = page->model()->currentRow();
@@ -631,6 +659,7 @@ void MainWindow::closePage(int index)
         updateNowPlaying();
     }
     m_tabs->removeTab(index);
+    scheduleSave();
     page->deleteLater();
 }
 
@@ -652,6 +681,7 @@ void MainWindow::renamePage(int index)
         return;
     page->model()->setName(name);
     m_tabs->setTabText(index, name);
+    scheduleSave();
 }
 
 void MainWindow::openPaths(const QStringList &paths)
@@ -700,10 +730,9 @@ void MainWindow::createLocalPage()
 void MainWindow::applyLocalScan(const TrackList &tracks)
 {
     PlaylistModel *model = m_localPage->model();
-    // Nothing changed (same entries in the same order): keep the view as it is.
-    const TrackList &now = model->tracks();
-    if (now.size() == tracks.size()
-        && std::equal(now.cbegin(), now.cend(), tracks.cbegin(), [](const Track &a, const Track &b) { return a.uid == b.uid; }))
+    // Nothing changed (same entries in the same order, no file changed):
+    // keep the view as it is.
+    if (LocalLibrary::sameList(model->tracks(), tracks))
         return;
 
     // Keep the list where the user was looking.
@@ -798,8 +827,10 @@ void MainWindow::playNext()
     PlaylistPage *page = m_playingPage ? m_playingPage.data() : currentPage();
     if (!page)
         return;
-    const int next = page->model()->currentRow() + 1;
-    if (next >= page->model()->rowCount()) {
+    PlaylistModel *model = page->model();
+    // Also from a track whose row has gone (deleted): see PlaylistModel::nextRow().
+    const int next = model->currentUid() ? model->nextRow() : (model->rowCount() > 0 ? 0 : -1);
+    if (next < 0) {
         m_engine->stop();   // end of playlist
         return;
     }
@@ -816,7 +847,7 @@ void MainWindow::playPrevious()
     PlaylistPage *page = m_playingPage ? m_playingPage.data() : currentPage();
     if (!page)
         return;
-    const int prev = page->model()->currentRow() - 1;
+    const int prev = page->model()->currentUid() ? page->model()->previousRow() : -1;
     if (prev >= 0) {
         playRow(page, prev);
         page->scrollToSourceRow(prev);
@@ -830,10 +861,12 @@ void MainWindow::changeVolume(int delta)
 
 void MainWindow::updateNowPlaying()
 {
-    const int row = m_playingPage ? m_playingPage->model()->currentRow() : -1;
-    if (row < 0) {
+    // Also a track whose row is gone: it plays on, so it is still shown.
+    const Track *current = m_playingPage ? m_playingPage->model()->currentTrack() : nullptr;
+    if (!current) {
         m_nowPlaying->clear();
         m_coverPath.clear();
+        ++m_coverJob;   // a cover still being read is for nothing now
         m_coverImage = QImage();
         setWindowTitle(QStringLiteral("Tembr"));
         m_mpris->setTrack(nullptr, {});
@@ -844,22 +877,13 @@ void MainWindow::updateNowPlaying()
         updateNavigation();
         return;
     }
-    const Track t = m_playingPage->model()->track(row);
+    const Track t = *current;
     if (t.path != m_coverPath) {
         m_coverPath = t.path;
-        m_coverImage = t.isUrl() ? QImage() : MetadataReader::readCover(t.path);
-
-        // MPRIS clients need the cover as a file.
-        if (!m_artFile.isEmpty())
-            QFile::remove(m_artFile);
-        m_artFile.clear();
-        if (!m_coverImage.isNull()) {
-            const QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-            QDir().mkpath(dir);
-            const QString file = QStringLiteral("%1/cover-%2.jpg").arg(dir).arg(t.uid);
-            if (m_coverImage.scaled(512, 512, Qt::KeepAspectRatio, Qt::SmoothTransformation).save(file, "JPG", 90))
-                m_artFile = file;
-        }
+        if (t.isUrl())
+            setCover(++m_coverJob, {}, {});
+        else
+            loadCover(t);   // the previous cover stays until this one is in (the same, within an album)
     }
     m_nowPlaying->showTrack(t, m_coverImage);
     setWindowTitle(t.displayTitle() + QStringLiteral(" — Tembr"));
@@ -871,12 +895,58 @@ void MainWindow::updateNowPlaying()
     updateNavigation();
 }
 
+// Reading the cover (and writing it as a file for MPRIS clients) touches the
+// disk, sometimes a slow one: done in the background, shown when it is in.
+void MainWindow::loadCover(const Track &t)
+{
+    const int job = ++m_coverJob;
+    const QString path = t.path;
+    const QString file = QStringLiteral("%1/cover-%2.jpg")
+                             .arg(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
+                             .arg(t.uid);
+    auto *watcher = new QFutureWatcher<QPair<QImage, QString>>(this);
+    connect(watcher, &QFutureWatcher<QPair<QImage, QString>>::finished, this, [this, watcher, job] {
+        const auto result = watcher->result();
+        watcher->deleteLater();
+        setCover(job, result.first, result.second);
+    });
+    watcher->setFuture(QtConcurrent::run([path, file] {
+        const QImage image = MetadataReader::readCover(path);
+        QString art;
+        if (!image.isNull()) {
+            QDir().mkpath(QFileInfo(file).absolutePath());
+            if (image.scaled(512, 512, Qt::KeepAspectRatio, Qt::SmoothTransformation).save(file, "JPG", 90))
+                art = file;
+        }
+        return qMakePair(image, art);
+    }));
+}
+
+void MainWindow::setCover(int job, const QImage &image, const QString &artFile)
+{
+    if (job != m_coverJob) {   // the track changed meanwhile
+        if (!artFile.isEmpty() && artFile != m_artFile)
+            QFile::remove(artFile);
+        return;
+    }
+    if (!m_artFile.isEmpty() && m_artFile != artFile)
+        QFile::remove(m_artFile);
+    m_artFile = artFile;
+    m_coverImage = image;
+    if (const Track *current = m_playingPage ? m_playingPage->model()->currentTrack() : nullptr) {
+        m_nowPlaying->showTrack(*current, m_coverImage);
+        m_mpris->setTrack(current, m_artFile);
+    }
+}
+
 void MainWindow::updateNavigation()
 {
-    const int row = m_playingPage ? m_playingPage->model()->currentRow() : -1;
-    const int count = m_playingPage ? m_playingPage->model()->rowCount() : 0;
-    m_mpris->setNavigation(row + 1 < count || (row < 0 && currentPage() && currentPage()->model()->rowCount() > 0),
-                           row > 0);
+    PlaylistModel *model = m_playingPage ? m_playingPage->model() : nullptr;
+    if (model && model->currentUid()) {
+        m_mpris->setNavigation(model->nextRow() >= 0, model->previousRow() >= 0);
+        return;
+    }
+    m_mpris->setNavigation(currentPage() && currentPage()->model()->rowCount() > 0, false);
 }
 
 // --- Playlist helpers ----------------------------------------------------------
@@ -1220,27 +1290,49 @@ void MainWindow::savePlaylist()
 
 // --- Session -----------------------------------------------------------------
 
-void MainWindow::saveSession()
+void MainWindow::scheduleSave()
 {
+    if (m_autosave)
+        m_autosave->start();
+}
+
+void MainWindow::saveSession(SaveScope scope)
+{
+    if (m_autosave)
+        m_autosave->stop();
     const QString dir = playlistDir();
     QDir().mkpath(dir);
-    for (const QString &old : QDir(dir).entryList({QStringLiteral("*.xspf")}, QDir::Files))
-        QFile::remove(dir + QLatin1Char('/') + old);
 
     // Tab indexes count every tab; files are written for ordinary playlists only
-    // (Local files are rebuilt from the folders, with their own cache).
+    // (Local files are rebuilt from the folders, with their own cache). Each
+    // file is replaced atomically; old files go only after all are written.
     int playingTab = -1;
     int files = 0;
+    QSet<QString> written;
+    QStringList failed;
     for (int i = 0; i < m_tabs->count(); ++i) {
         auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(i));
         if (page == m_playingPage)
             playingTab = i;
         if (page == m_localPage)
             continue;
-        const QString file = QStringLiteral("%1/%2.xspf").arg(dir).arg(files++, 3, 10, QLatin1Char('0'));
-        PlaylistIO::save(file, {page->model()->name(), page->model()->tracks()});
+        const QString name = QStringLiteral("%1.xspf").arg(files++, 3, 10, QLatin1Char('0'));
+        QString error;
+        if (PlaylistIO::save(dir + QLatin1Char('/') + name, {page->model()->name(), page->model()->tracks()}, &error))
+            written.insert(name);
+        else
+            failed << QStringLiteral("%1: %2").arg(page->model()->name(), error);
     }
-    m_localFiles->saveCache(m_localPage->model()->tracks());
+    if (failed.isEmpty()) {
+        for (const QString &old : QDir(dir).entryList({QStringLiteral("*.xspf")}, QDir::Files)) {
+            if (!written.contains(old))
+                QFile::remove(dir + QLatin1Char('/') + old);
+        }
+    } else {
+        statusBar()->showMessage(QStringLiteral("Не удалось сохранить плейлисты: ") + failed.join(QStringLiteral("; ")), 10000);
+    }
+    if (scope == SaveScope::Everything)
+        m_localFiles->saveCache(m_localPage->model()->tracks());
 
     QSettings s;
     s.setValue(QStringLiteral("session/version"), 2);
@@ -1250,9 +1342,8 @@ void MainWindow::saveSession()
     s.setValue(QStringLiteral("session/playingTab"), playingTab);
     s.setValue(QStringLiteral("session/playingRow"), m_playingPage ? m_playingPage->model()->currentRow() : -1);
     // Rows of Local files change with the folders: remember the file.
-    const int playingRow = m_playingPage ? m_playingPage->model()->currentRow() : -1;
-    s.setValue(QStringLiteral("session/playingPath"),
-               playingRow >= 0 ? m_playingPage->model()->track(playingRow).path : QString());
+    const Track *playing = m_playingPage ? m_playingPage->model()->currentTrack() : nullptr;
+    s.setValue(QStringLiteral("session/playingPath"), playing ? playing->path : QString());
     s.setValue(QStringLiteral("volume"), m_volume->value());
     s.setValue(QStringLiteral("searchField"), m_searchField->currentIndex());
     s.setValue(QStringLiteral("geometry"), saveGeometry());
@@ -1331,6 +1422,7 @@ void MainWindow::closeEvent(QCloseEvent *e)
         return;
     }
     saveSession();
+    m_finalSaveDone = true;
     m_engine->unload();
     releaseHotkeys();
     if (!m_artFile.isEmpty())
