@@ -233,7 +233,11 @@ PlaylistPage::PlaylistPage(const QString &name, QWidget *parent)
                 return;
             }
             m_layoutWanted = true;
-            scheduleFit(true);   // hidden, shown in another tab, layout restored, ...
+            // Hidden: what the content needs is the same, only the layout
+            // changes. QHeaderView hides its hidden sections again after
+            // every filter change (layoutChanged), which re-measured 100k
+            // rows (~50 ms) per keystroke in every list on screen.
+            scheduleFit(size > 0);   // shown in another tab, layout restored, ...
         }
     });
     // Double click on a column edge: back to the width from the content.
