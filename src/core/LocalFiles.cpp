@@ -270,19 +270,23 @@ void LocalFiles::setSettings(const LocalFilesSettings &s)
     m_settings.save();
 }
 
-TrackList LocalFiles::loadCache() const
+QString LocalFiles::cacheFile()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/local-files.xspf");
+}
+
+TrackList LocalFiles::loadCache(const QString &file)
 {
     PlaylistData data;
-    const QString file = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/local-files.xspf");
     PlaylistIO::load(file, data);   // damaged: what could be read; the rescan reads the rest
     return data.tracks;
 }
 
 void LocalFiles::saveCache(const TrackList &tracks) const
 {
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir().mkpath(dir);
-    PlaylistIO::save(dir + QStringLiteral("/local-files.xspf"), {QStringLiteral("Локальные файлы"), tracks});
+    const QString file = cacheFile();
+    QDir().mkpath(QFileInfo(file).absolutePath());
+    PlaylistIO::save(file, {QStringLiteral("Локальные файлы"), tracks});
 }
 
 void LocalFiles::rescan(const TrackList &known)

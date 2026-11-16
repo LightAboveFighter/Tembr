@@ -61,9 +61,8 @@ add_library(tembr_core STATIC
 target_include_directories(tembr_core PUBLIC src)
 target_link_libraries(tembr_core PUBLIC Qt6::Core Qt6::Gui Qt6::Concurrent Qt6::DBus PkgConfig::FFMPEG miniaudio)
 
-# --- application -------------------------------------------------------------
-add_executable(tembr
-    src/main.cpp
+# --- user interface (a library: the tests build windows from it) -------------
+add_library(tembr_ui STATIC
     src/ui/MainWindow.h src/ui/MainWindow.cpp
     src/ui/PlaylistModel.h src/ui/PlaylistModel.cpp
     src/ui/PlaylistFilterProxy.h src/ui/PlaylistFilterProxy.cpp
@@ -80,7 +79,11 @@ add_executable(tembr
     src/ui/LocalFilesDialog.h src/ui/LocalFilesDialog.cpp
     src/ui/MigrationDialog.h src/ui/MigrationDialog.cpp
 )
-target_link_libraries(tembr PRIVATE tembr_core Qt6::Widgets)
+target_link_libraries(tembr_ui PUBLIC tembr_core Qt6::Widgets)
+
+# --- application -------------------------------------------------------------
+add_executable(tembr src/main.cpp)
+target_link_libraries(tembr PRIVATE tembr_ui)
 target_compile_definitions(tembr PRIVATE TEMBR_VERSION="${PROJECT_VERSION}")
 install(TARGETS tembr RUNTIME DESTINATION bin)
 
@@ -127,6 +130,11 @@ if(TEMBR_BUILD_TESTS)
     target_link_libraries(test_playlistpage PRIVATE tembr_core Qt6::Widgets Qt6::Test)
     add_test(NAME test_playlistpage COMMAND test_playlistpage)
     set_tests_properties(test_playlistpage PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    add_executable(test_mainwindow tests/test_mainwindow.cpp tests/TestAudio.h)
+    target_link_libraries(test_mainwindow PRIVATE tembr_ui Qt6::Test)
+    add_test(NAME test_mainwindow COMMAND test_mainwindow)
+    set_tests_properties(test_mainwindow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;TEMBR_AUDIO_BACKEND=null")
 
     # Manual tools (see the file headers).
     add_executable(playlist_probe tests/playlist_probe.cpp)

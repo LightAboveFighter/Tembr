@@ -112,8 +112,9 @@ void saveRemaps(const QList<PathResolver::Remap> &remaps)
 
 } // namespace
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(const MainWindowOptions &options, QWidget *parent)
     : QMainWindow(parent)
+    , m_options(options)
     , m_engine(new AudioEngine(this))
     , m_mpris(new MprisService(m_engine, this))
     , m_localFiles(new LocalFiles(this))
@@ -158,13 +159,12 @@ MainWindow::MainWindow(QWidget *parent)
         showAndRaise();
         openPaths(paths);
     });
-    if (!m_mpris->registerOnBus())
+    if (m_options.desktopIntegration && !m_mpris->registerOnBus())
         qWarning("MPRIS: could not register on the session bus");
 
     connect(m_localFiles, &LocalFiles::scanned, this, &MainWindow::applyLocalScan);
     connect(m_localFiles, &LocalFiles::scanningChanged, this, &MainWindow::updateStats);
-    connect(m_localFiles, &LocalFiles::changedOnDisk, this,
-            [this] { m_localFiles->rescan(m_localPage->model()->tracks()); });
+    connect(m_localFiles, &LocalFiles::changedOnDisk, this, &MainWindow::rescanLocal);
 
     m_settings = AppSettings::load();
     applySettings(m_settings);
@@ -220,10 +220,10 @@ void MainWindow::buildActions()
     m_actQuit = new QAction(QStringLiteral("Выход"), this);
     m_actQuit->setShortcut(QKeySequence::Quit);
 
-    connect(m_actPrev, &QAction::triggered, this, &MainWindow::playPrevious);
-    connect(m_actPlay, &QAction::triggered, this, &MainWindow::playOrResume);
+    connect(m_actPrev, &QAction::triggered, this, [this] { handleCommand(QStringLiteral("previous")); });
+    connect(m_actPlay, &QAction::triggered, this, [this] { handleCommand(QStringLiteral("play-pause")); });
     connect(m_actStop, &QAction::triggered, m_engine, &AudioEngine::stop);
-    connect(m_actNext, &QAction::triggered, this, &MainWindow::playNext);
+    connect(m_actNext, &QAction::triggered, this, [this] { handleCommand(QStringLiteral("next")); });
     connect(m_actShow, &QAction::triggered, this, &MainWindow::toggleVisible);
     connect(m_actQuit, &QAction::triggered, this, &MainWindow::quit);
 
@@ -273,9 +273,16 @@ void MainWindow::buildActions()
             p->model()->clear();
     });
     pl->addSeparator();
-    addItem(pl, QStringLiteral("Обновить локальные файлы"), QKeySequence(Qt::Key_F5), this,
-            [this] { m_localFiles->rescan(m_localPage->model()->tracks()); });
+    addItem(pl, QStringLiteral("Обновить локальные файлы"), QKeySequence(Qt::Key_F5), this, &MainWindow::rescanLocal);
     pl->addAction(QStringLiteral("Настройки локальных файлов…"), this, &MainWindow::showLocalFilesSettings);
+
+    // Work on playlists: off until the session is loaded (see restoreSession()).
+    for (QMenu *menu : {file, pl}) {
+        for (QAction *a : menu->actions()) {
+            if (!a->isSeparator() && a != m_actQuit && a->text() != QStringLiteral("Настройки…"))
+                m_needSession << a;
+        }
+    }
 
     // --- Playback
     QMenu *pb = menuBar()->addMenu(QStringLiteral("&Воспроизведение"));
@@ -462,7 +469,7 @@ void MainWindow::applySettings(const AppSettings &s)
 
 void MainWindow::setupTray(bool enabled)
 {
-    if (!enabled || !QSystemTrayIcon::isSystemTrayAvailable()) {
+    if (!enabled || !m_options.desktopIntegration || !QSystemTrayIcon::isSystemTrayAvailable()) {
         delete m_tray;
         m_tray = nullptr;
         return;
@@ -486,7 +493,7 @@ void MainWindow::setupTray(bool enabled)
             if (r == QSystemTrayIcon::Trigger)
                 toggleVisible();
             else if (r == QSystemTrayIcon::MiddleClick)
-                playOrResume();
+                handleCommand(QStringLiteral("play-pause"));
         });
     }
     m_tray->show();
@@ -495,6 +502,8 @@ void MainWindow::setupTray(bool enabled)
 
 void MainWindow::registerHotkeys()
 {
+    if (!m_options.desktopIntegration)
+        return;
     // gsettings takes a while (also to find out whether it can be used):
     // don't hold up the window.
     m_hotkeyJob = QtConcurrent::run([keys = m_settings.hotkeys] {
@@ -504,7 +513,7 @@ void MainWindow::registerHotkeys()
 
 void MainWindow::releaseHotkeys()
 {
-    if (m_hotkeysReleased)
+    if (m_hotkeysReleased || !m_options.desktopIntegration)
         return;
     m_hotkeysReleased = true;
     m_hotkeyJob.waitForFinished();
@@ -522,7 +531,7 @@ void MainWindow::showSettings()
     m_settings = s;
     m_settings.save();
     applySettings(m_settings);
-    if (keysChanged) {
+    if (keysChanged && m_options.desktopIntegration) {
         // Some 20 gsettings calls: in the background, after the one before.
         auto *watcher = new QFutureWatcher<QString>(this);
         connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher] {
@@ -575,6 +584,13 @@ void MainWindow::quit()
 
 void MainWindow::handleCommand(const QString &command)
 {
+    // Before the playlists are in there is nothing to play: done once they are.
+    static const QStringList needSession = {QStringLiteral("play-pause"), QStringLiteral("play"),
+                                            QStringLiteral("next"), QStringLiteral("previous")};
+    if (!m_sessionLoaded && needSession.contains(command)) {
+        m_pendingCommands << command;
+        return;
+    }
     if (command == QLatin1String("play-pause"))
         playOrResume();
     else if (command == QLatin1String("play")) {
@@ -708,6 +724,10 @@ void MainWindow::renamePage(int index)
 
 void MainWindow::openPaths(const QStringList &paths)
 {
+    if (!m_sessionLoaded) {
+        m_pendingOpen << paths;   // into the playlist restored, not a new empty one
+        return;
+    }
     PlaylistPage *page = editablePage();
     m_tabs->setCurrentWidget(page);
     page->addPaths(paths, -1, true);
@@ -746,7 +766,6 @@ void MainWindow::createLocalPage()
     // Not closable: drop the close button (its side depends on the style).
     m_tabs->tabBar()->setTabButton(index, QTabBar::RightSide, nullptr);
     m_tabs->tabBar()->setTabButton(index, QTabBar::LeftSide, nullptr);
-    m_localPage->model()->setTracks(m_localFiles->loadCache());   // saved in its order
     // Sorting by a column header is remembered too, as in AIMP.
     connect(m_localPage->model(), &PlaylistModel::sorted, this, [this](int column, Qt::SortOrder order) {
         m_localSortColumn = column;
@@ -777,7 +796,7 @@ void MainWindow::setLocalSort(int column, Qt::SortOrder order)
     m_localSortColumn = -1;
     syncLocalSort();
     QSettings().setValue(QStringLiteral("localFiles/sortColumn"), -1);
-    m_localFiles->rescan(m_localPage->model()->tracks());   // comes back in folder order
+    rescanLocal();   // comes back in folder order
 }
 
 void MainWindow::syncLocalSort()
@@ -828,7 +847,7 @@ void MainWindow::showLocalFilesSettings()
     if (s == m_localFiles->settings())
         return;
     m_localFiles->setSettings(s);
-    m_localFiles->rescan(m_localPage->model()->tracks());
+    rescanLocal();
 }
 
 // --- Playback ----------------------------------------------------------------
@@ -1124,7 +1143,7 @@ void MainWindow::showContextMenu(const QPoint &globalPos)
         sortMenu->addSeparator();
         sortItem(QStringLiteral("Сначала недавно изменённые"), PlaylistModel::ColModified, Qt::DescendingOrder);
         sortItem(QStringLiteral("Сначала давно изменённые"), PlaylistModel::ColModified, Qt::AscendingOrder);
-        menu.addAction(QStringLiteral("Обновить"), this, [this] { m_localFiles->rescan(m_localPage->model()->tracks()); });
+        menu.addAction(QStringLiteral("Обновить"), this, &MainWindow::rescanLocal);
         menu.addAction(QStringLiteral("Настройки локальных файлов…"), this, &MainWindow::showLocalFilesSettings);
         menu.exec(globalPos);
         return;
@@ -1494,8 +1513,7 @@ void MainWindow::forgetDeletedFiles(PlaylistPage *from, const QStringList &paths
         }
     }
 
-    if (m_localPage)
-        m_localFiles->rescan(m_localPage->model()->tracks());   // at once, not after the watcher's delay
+    rescanLocal();   // at once, not after the watcher's delay
     updateStats();
     statusBar()->showMessage(QStringLiteral("Удалено с диска файлов: %1").arg(paths.size()), 5000);
 }
@@ -1536,6 +1554,11 @@ void MainWindow::saveSession(SaveScope scope)
 {
     if (m_autosave)
         m_autosave->stop();
+    // Not loaded yet: an empty set written now would remove every playlist
+    // file (SessionFiles::save() drops files it did not write), and the
+    // Local files cache would be emptied.
+    if (!m_sessionLoaded)
+        return;
     // Tab indexes count every tab; files are written for ordinary playlists only
     // (Local files are rebuilt from the folders, with their own cache).
     int playingTab = -1;
@@ -1609,7 +1632,43 @@ void MainWindow::restoreSession()
 
     createLocalPage();
     syncLocalSort();
-    const SessionFiles::Loaded session = SessionFiles::load(playlistDir());
+
+    // The playlists and the Local files cache are read on a worker thread:
+    // big lists take a second or more, a drive that does not answer any time
+    // at all, and the window should be there at once. Meanwhile the
+    // playlists cannot be used; files and commands that come are kept.
+    for (const QPointer<QAction> &a : std::as_const(m_needSession))
+        a->setEnabled(false);
+    for (QWidget *w : {static_cast<QWidget *>(m_tabs), static_cast<QWidget *>(m_search),
+                       static_cast<QWidget *>(m_searchField)})
+        w->setEnabled(false);
+    statusBar()->showMessage(QStringLiteral("Загрузка плейлистов…"));
+
+    std::function<SessionSnapshot()> load = m_options.loadSession;
+    if (!load) {
+        load = [dir = playlistDir(), cache = LocalFiles::cacheFile()] {
+            SessionSnapshot out;
+            out.localFiles = LocalFiles::loadCache(cache);
+            SessionFiles::Loaded loaded = SessionFiles::load(dir);
+            out.playlists = std::move(loaded.playlists);
+            out.keptAside = std::move(loaded.keptAside);
+            return out;
+        };
+    }
+    // Owned by the window: closed before the files are in, the result is
+    // dropped with it (the job has its own copies; see main() for the end).
+    auto *watcher = new QFutureWatcher<SessionSnapshot>(this);
+    connect(watcher, &QFutureWatcher<SessionSnapshot>::finished, this, [this, watcher] {
+        watcher->deleteLater();
+        applySession(watcher->result());
+    });
+    watcher->setFuture(QtConcurrent::run(std::move(load)));
+}
+
+void MainWindow::applySession(const SessionSnapshot &session)
+{
+    QSettings s;
+    m_localPage->model()->setTracks(session.localFiles);   // saved in its order
     for (int i = 0; i < session.playlists.size(); ++i) {
         const PlaylistData &data = session.playlists[i];
         PlaylistPage *page = addPage(data.name.isEmpty() ? QStringLiteral("Плейлист %1").arg(i + 1) : data.name);
@@ -1655,12 +1714,38 @@ void MainWindow::restoreSession()
         page->model()->setCurrent(page->model()->track(playingRow).uid);
         page->scrollToSourceRow(playingRow);
     }
+
+    m_sessionLoaded = true;
+    for (const QPointer<QAction> &a : std::as_const(m_needSession)) {
+        if (a)
+            a->setEnabled(true);
+    }
+    for (QWidget *w : {static_cast<QWidget *>(m_tabs), static_cast<QWidget *>(m_search),
+                       static_cast<QWidget *>(m_searchField)})
+        w->setEnabled(true);
+    statusBar()->clearMessage();
     updateNowPlaying();
     updateStats();
     if (auto *page = currentPage())
         page->view()->setFocus();
-    // Bring Local files up to date with the folders (the cache was shown meanwhile).
-    m_localFiles->rescan(m_localPage->model()->tracks());
+    // Bring Local files up to date with the folders (the cache was shown
+    // meanwhile); only now, with the cache in: from an empty list every
+    // track would get a new uid and its tags read again.
+    rescanLocal();
+
+    const QList<QStringList> open = std::exchange(m_pendingOpen, {});
+    for (const QStringList &paths : open)
+        openPaths(paths);
+    const QStringList commands = std::exchange(m_pendingCommands, {});
+    for (const QString &command : commands)
+        handleCommand(command);
+    emit sessionLoaded();
+}
+
+void MainWindow::rescanLocal()
+{
+    if (m_sessionLoaded)   // before: applySession() starts it, from the cache
+        m_localFiles->rescan(m_localPage->model()->tracks());
 }
 
 void MainWindow::closeEvent(QCloseEvent *e)
