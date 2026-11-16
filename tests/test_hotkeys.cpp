@@ -5,6 +5,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QProcess>
 #include <QTest>
 
 class TestHotkeys : public QObject
@@ -159,6 +160,33 @@ private slots:
     {
         QVERIFY(GlobalHotkeys::command(GlobalHotkeys::Action::Next).endsWith(QStringLiteral(" --next")));
         QVERIFY(GlobalHotkeys::command(GlobalHotkeys::Action::PlayPause).endsWith(QStringLiteral(" --play-pause")));
+    }
+
+    // The program path is one argument whatever it holds (GNOME runs the
+    // command through shell-style parsing): checked with a real shell.
+    void shellQuoting()
+    {
+        const QStringList paths = {QStringLiteral("/usr/bin/tembr"), QStringLiteral("/opt/my apps/tembr"),
+                                   QStringLiteral("/home/u/it's $HOME `x` \"q\" \\ ; & | * ? #/tembr"),
+                                   QStringLiteral("/home/юзер/Музыка/tembr")};
+        for (const QString &p : paths) {
+            QProcess sh;
+            sh.start(QStringLiteral("/bin/sh"), {QStringLiteral("-c"), QStringLiteral("printf %s ") + GlobalHotkeys::shellQuote(p)});
+            QVERIFY(sh.waitForFinished(5000));
+            QCOMPARE(QString::fromUtf8(sh.readAllStandardOutput()), p);
+        }
+        QCOMPARE(GlobalHotkeys::shellQuote(QStringLiteral("/usr/bin/tembr")), QStringLiteral("/usr/bin/tembr"));
+    }
+
+    void desktopExecQuoting()
+    {
+        QCOMPARE(GlobalHotkeys::desktopExecQuote(QStringLiteral("/usr/bin/tembr")), QStringLiteral("/usr/bin/tembr"));
+        QCOMPARE(GlobalHotkeys::desktopExecQuote(QStringLiteral("/opt/my apps/tembr")),
+                 QStringLiteral("\"/opt/my apps/tembr\""));
+        QCOMPARE(GlobalHotkeys::desktopExecQuote(QStringLiteral("/a/50%/tembr")), QStringLiteral("/a/50%%/tembr"));
+        // " $ ` \ escaped inside the quotes, then every backslash once more for the value.
+        QCOMPARE(GlobalHotkeys::desktopExecQuote(QStringLiteral("/a/$x\"b\\c")),
+                 QStringLiteral("\"/a/\\\\$x\\\\\"b\\\\\\\\c\""));
     }
 };
 
