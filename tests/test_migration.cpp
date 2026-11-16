@@ -211,6 +211,71 @@ private slots:
         QCOMPARE(data.tracks[0].path, copyTo.filePath(QStringLiteral("Lieder/Band - Song.mp3")));
     }
 
+    // A copy cut short is not taken later for one made before.
+    void interruptedCopyIsNotKept()
+    {
+        struct Flaky : Migration::PhoneSource
+        {
+            QString root;
+            bool fail = true;
+            Kind kind() const override { return Kind::Folder; }
+            QString label() const override { return QStringLiteral("flaky"); }
+            QList<Migration::PhoneStorage> storages() const override
+            {
+                Migration::PhoneStorage s;
+                s.name = QStringLiteral("Internal");
+                s.root = root;
+                s.primary = true;
+                return {s};
+            }
+            QList<Migration::PhonePlaylistFile> findPlaylists(QString *) override { return {}; }
+            QByteArray readFile(int, const QString &rel, QString *) override
+            {
+                QFile f(root + QLatin1Char('/') + rel);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            }
+            bool exists(int, const QString &rel) override { return QFileInfo::exists(root + QLatin1Char('/') + rel); }
+            bool copyTo(int, const QString &rel, const QString &localPath, QString *error) override
+            {
+                QDir().mkpath(QFileInfo(localPath).absolutePath());
+                QFile out(localPath);
+                if (!out.open(QIODevice::WriteOnly))
+                    return false;
+                const QByteArray all = readFile(0, rel, nullptr);
+                out.write(fail ? all.left(3) : all);   // like adb pull killed halfway
+                if (fail && error)
+                    *error = QStringLiteral("timeout");
+                return !fail;
+            }
+        };
+
+        QTemporaryDir phone, copyTo;
+        writeFile(phone.filePath(QStringLiteral("Music/a.mp3")), "the whole song");
+        writeFile(phone.filePath(QStringLiteral("Music/list.m3u")), "a.mp3\n");
+        Flaky src;
+        src.root = phone.path();
+        Migration::PhoneImportOptions opt;
+        opt.copyMissingTo = copyTo.path();
+        const Migration::PhonePlaylistFile file{0, QStringLiteral("Music/list.m3u")};
+
+        PlaylistData data;
+        Migration::PhoneImportStats stats;
+        QVERIFY(Migration::importPhonePlaylist(src, file, opt, data, stats));
+        QCOMPARE(stats.copied, 0);
+        QVERIFY(data.tracks[0].missing);
+        QVERIFY(!QFileInfo::exists(copyTo.filePath(QStringLiteral("a.mp3"))));
+        QVERIFY(!QFileInfo::exists(copyTo.filePath(QStringLiteral("a.mp3.part"))));
+
+        src.fail = false;   // next time it works
+        data = {};
+        stats = {};
+        QVERIFY(Migration::importPhonePlaylist(src, file, opt, data, stats));
+        QCOMPARE(stats.copied, 1);
+        QFile copied(copyTo.filePath(QStringLiteral("a.mp3")));
+        QVERIFY(copied.open(QIODevice::ReadOnly));
+        QCOMPARE(copied.readAll(), QByteArray("the whole song"));
+    }
+
     void phoneEntries()
     {
         using Migration::PhoneRef;

@@ -45,6 +45,12 @@ bool desktopSupported();          // GNOME with gsettings
 QString desktopName();
 
 QString command(Action a);        // "/path/to/tembr --next"
+
+// The program path as one argument of a command line: for GNOME's custom
+// keybindings (shell rules) and for Exec= of a desktop entry (its own rules,
+// including the escaping of the value itself).
+QString shellQuote(const QString &arg);
+QString desktopExecQuote(const QString &arg);
 QString gtkAccelerator(const QKeySequence &seq);   // "<Control><Alt>Right"; empty if unsupported
 
 // Registers (or removes, for empty sequences) the bindings with GNOME.

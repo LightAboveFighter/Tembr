@@ -1,6 +1,7 @@
 #include "migration/PhoneImport.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QUrl>
@@ -195,16 +196,23 @@ bool importPhonePlaylist(PhoneSource &source, const PhonePlaylistFile &file, con
                             candidates << s;
                     }
                 }
+                // Into "<name>.part", renamed when complete: a copy cut short
+                // (adb timed out, the cable came out) is never taken later for
+                // one "copied before".
+                const QString part = dest + QStringLiteral(".part");
                 QString copyError;
                 for (int s : std::as_const(candidates)) {
                     if (source.kind() != PhoneSource::Kind::Adb && !source.exists(s, ref.rel))
                         continue;
-                    if (source.copyTo(s, ref.rel, dest, &copyError)) {
+                    QFile::remove(part);   // left by an earlier attempt
+                    if (source.copyTo(s, ref.rel, part, &copyError) && QFileInfo(part).size() > 0
+                        && QFile::rename(part, dest)) {
                         localPath = dest;
                         ++local.copied;
                         break;
                     }
                 }
+                QFile::remove(part);
                 if (localPath.isEmpty() && !copyError.isEmpty())
                     local.errors << QStringLiteral("%1: %2").arg(ref.rel, copyError);
             }

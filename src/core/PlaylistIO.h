@@ -22,7 +22,8 @@ bool isPlaylistFile(const QString &path);
 
 // Loads any readable format, chosen by extension. Relative and Windows-style
 // paths are resolved against the playlist's folder. Entries that point to a
-// .cue sheet are expanded into its tracks.
+// .cue sheet are expanded into its tracks. A damaged XSPF file gives false,
+// with `out` holding the tracks before the damage.
 bool load(const QString &file, PlaylistData &out, QString *error = nullptr);
 
 // Saves in the format given by the extension. XSPF keeps everything (CUE
@@ -48,6 +49,8 @@ TrackList parseAimppl4(const QString &text, const QString &baseDir, QString *nam
 TrackList parseM3u(const QString &text, const EntryResolver &resolve, QString *name = nullptr);
 TrackList parsePls(const QString &text, const EntryResolver &resolve);
 TrackList parseXspf(const QByteArray &xml, const EntryResolver &resolve, QString *name = nullptr);
+// As parseXspf(); `*error` is set when the XML is damaged.
+TrackList parseXspfChecked(const QByteArray &xml, const EntryResolver &resolve, QString *name, QString *error);
 TrackList parseAimppl4(const QString &text, const EntryResolver &resolve, QString *name = nullptr);
 TrackList parseCue(const QString &text, const QString &cueFile, QString *albumTitle = nullptr);
 

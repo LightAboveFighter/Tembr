@@ -2,6 +2,8 @@
 
 #include <QCoreApplication>
 #include <QProcess>
+
+#include <algorithm>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
@@ -224,12 +226,44 @@ QString desktopName()
     return d.isEmpty() ? QStringLiteral("неизвестное окружение") : d;
 }
 
+QString shellQuote(const QString &arg)
+{
+    static const QString plain = QStringLiteral("/-_.+,:=@%");
+    const bool safe = !arg.isEmpty() && std::all_of(arg.cbegin(), arg.cend(), [](QChar c) {
+        return (c.unicode() < 128 && c.isLetterOrNumber()) || plain.contains(c);
+    });
+    if (safe)
+        return arg;
+    QString q = arg;
+    q.replace(QLatin1Char('\''), QLatin1String("'\\''"));
+    return QLatin1Char('\'') + q + QLatin1Char('\'');
+}
+
+QString desktopExecQuote(const QString &arg)
+{
+    // Desktop Entry spec: reserved characters need double quotes, inside
+    // which " ` $ \ are escaped with a backslash; "%" is a field code
+    // unless doubled; and the value as a whole escapes backslashes again.
+    static const QString reserved = QStringLiteral(" \t\n\"'\\><~|&;$*?#()`");
+    QString out = arg;
+    out.replace(QLatin1Char('%'), QLatin1String("%%"));
+    if (std::any_of(arg.cbegin(), arg.cend(), [](QChar c) { return reserved.contains(c); })) {
+        QString q;
+        for (QChar c : std::as_const(out)) {
+            if (c == QLatin1Char('"') || c == QLatin1Char('`') || c == QLatin1Char('$') || c == QLatin1Char('\\'))
+                q += QLatin1Char('\\');
+            q += c;
+        }
+        out = QLatin1Char('"') + q + QLatin1Char('"');
+    }
+    out.replace(QLatin1Char('\\'), QLatin1String("\\\\"));
+    out.replace(QLatin1Char('\n'), QLatin1String("\\n"));
+    return out;
+}
+
 QString command(Action a)
 {
-    QString exe = QCoreApplication::applicationFilePath();
-    if (exe.contains(QLatin1Char(' ')))
-        exe = QLatin1Char('"') + exe + QLatin1Char('"');
-    return exe + QStringLiteral(" --") + idOf(a);
+    return shellQuote(QCoreApplication::applicationFilePath()) + QStringLiteral(" --") + idOf(a);
 }
 
 QString gtkAccelerator(const QKeySequence &seq)

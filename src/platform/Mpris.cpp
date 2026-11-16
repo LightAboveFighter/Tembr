@@ -198,6 +198,16 @@ bool MprisService::registerOnBus()
     return m_registered;
 }
 
+void MprisService::unregisterFromBus()
+{
+    if (!m_registered)
+        return;
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    bus.unregisterService(serviceName());
+    bus.unregisterObject(objectPath());
+    m_registered = false;
+}
+
 void MprisService::setTrack(const Track *t, const QString &artPath)
 {
     QVariantMap m;

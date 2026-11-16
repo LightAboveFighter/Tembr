@@ -26,6 +26,9 @@ public:
     explicit MprisService(AudioEngine *engine, QObject *parent = nullptr);
 
     bool registerOnBus();
+    // Gives up the bus name, so that a player started while this one is
+    // still shutting down becomes the running one.
+    void unregisterFromBus();
     bool isRegistered() const { return m_registered; }
 
     // nullptr = nothing loaded. artPath: an image file for the cover, or empty.

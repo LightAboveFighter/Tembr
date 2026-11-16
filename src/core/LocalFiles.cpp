@@ -17,9 +17,11 @@
 
 namespace {
 
+// Two sheets for one audio file give tracks with the same file and start.
 QString trackKey(const Track &t)
 {
-    return t.isCueTrack() ? t.path + QLatin1Char('#') + QString::number(t.startMs) : t.path;
+    return t.isCueTrack() ? t.cueSheet + QLatin1Char('|') + t.path + QLatin1Char('#') + QString::number(t.startMs)
+                          : t.path;
 }
 
 QStringList cleanFolders(const QStringList &in)
@@ -136,10 +138,14 @@ TrackList LocalLibrary::scan(const LocalFilesSettings &settings, const TrackList
     for (const Track &t : known)
         byKey.insert(trackKey(t), t);
 
-    QStringList folders;
+    // A folder that is not there, or empty, is most likely a drive that is
+    // not mounted: its tracks stay, marked missing, with their dates and tags.
+    QStringList folders, unavailable;
     for (const QString &f : cleanFolders(settings.folders)) {
-        if (QFileInfo(f).isDir())
+        if (QFileInfo(f).isDir() && !QDir(f).isEmpty())
             folders << f;
+        else
+            unavailable << f;
     }
     TrackList found = MediaCollector::collect(folders, cleanFolders(settings.excluded), dirs);
 
@@ -197,6 +203,16 @@ TrackList LocalLibrary::scan(const LocalFilesSettings &settings, const TrackList
         kept.addedMs = it->addedMs > 0 ? it->addedMs : FileTimes::addedMs(fi);   // first seen stays
         kept.modifiedMs = modified;
     }
+
+    for (const QString &root : std::as_const(unavailable)) {
+        const QString prefix = root.endsWith(QLatin1Char('/')) ? root : root + QLatin1Char('/');
+        for (const Track &k : known) {
+            if (k.path.startsWith(prefix) && !present.contains(trackKey(k))) {
+                out.append(k);
+                out.last().missing = true;
+            }
+        }
+    }
     return out;
 }
 
@@ -207,7 +223,8 @@ bool LocalLibrary::sameList(const TrackList &shown, const TrackList &scanned)
     for (int i = 0; i < shown.size(); ++i) {
         const Track &n = scanned.at(i);
         const Track &o = shown.at(i);
-        if (n.uid != o.uid || n.path != o.path || n.addedMs != o.addedMs || n.modifiedMs != o.modifiedMs
+        if (n.uid != o.uid || n.path != o.path || n.missing != o.missing || n.addedMs != o.addedMs
+            || n.modifiedMs != o.modifiedMs
             || (!n.scanned && n.fileSize > 0))
             return false;
     }
@@ -243,10 +260,9 @@ LocalFiles::LocalFiles(QObject *parent)
     });
 }
 
-LocalFiles::~LocalFiles()
-{
-    m_watcher.waitForFinished();
-}
+// A scan still running works on its own copies and is not waited for: it can
+// take minutes on a big or slow drive. See main() for the end of the process.
+LocalFiles::~LocalFiles() = default;
 
 void LocalFiles::setSettings(const LocalFilesSettings &s)
 {
@@ -258,7 +274,8 @@ TrackList LocalFiles::loadCache() const
 {
     PlaylistData data;
     const QString file = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/local-files.xspf");
-    return PlaylistIO::load(file, data) ? data.tracks : TrackList();
+    PlaylistIO::load(file, data);   // damaged: what could be read; the rescan reads the rest
+    return data.tracks;
 }
 
 void LocalFiles::saveCache(const TrackList &tracks) const

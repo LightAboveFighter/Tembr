@@ -11,9 +11,12 @@
 #include <QFileInfo>
 #include <QLibraryInfo>
 #include <QLocale>
+#include <QThreadPool>
 #include <QTranslator>
+#include <QUrl>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 extern "C" {
@@ -82,7 +85,11 @@ int main(int argc, char *argv[])
 
     QStringList paths;
     for (const QString &arg : app.arguments().mid(1)) {
-        if (!arg.startsWith(QLatin1Char('-')))
+        if (arg.startsWith(QLatin1Char('-')))
+            continue;
+        if (const QUrl url(arg); arg.startsWith(QLatin1String("file:"), Qt::CaseInsensitive) && url.isLocalFile())
+            paths << url.toLocalFile();   // Exec=tembr %U
+        else
             paths << (arg.contains(QLatin1String("://")) ? arg : QFileInfo(arg).absoluteFilePath());
     }
 
@@ -108,5 +115,13 @@ int main(int argc, char *argv[])
     if (!paths.isEmpty())
         w.openPaths(paths);
 
-    return app.exec();
+    const int code = app.exec();
+    // Everything is saved by now. Background work still running (a tag read
+    // or a folder scan stuck on a network drive) would hold the process in
+    // the thread pool's destructor: give it a moment, then leave without it.
+    if (!QThreadPool::globalInstance()->waitForDone(3000)) {
+        std::fflush(nullptr);
+        std::_Exit(code);
+    }
+    return code;
 }

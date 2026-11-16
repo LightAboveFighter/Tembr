@@ -6,6 +6,7 @@
 #include "core/MetadataReader.h"
 #include "core/PathResolver.h"
 #include "core/PlaylistIO.h"
+#include "core/SessionFiles.h"
 #include "core/Relocator.h"
 #include "platform/Mpris.h"
 #include "ui/DeleteFilesDialog.h"
@@ -494,9 +495,11 @@ void MainWindow::setupTray(bool enabled)
 
 void MainWindow::registerHotkeys()
 {
-    // gsettings takes a while; don't hold up the window.
-    if (GlobalHotkeys::desktopSupported())
-        m_hotkeyJob = QtConcurrent::run(&GlobalHotkeys::applyToDesktop, m_settings.hotkeys);
+    // gsettings takes a while (also to find out whether it can be used):
+    // don't hold up the window.
+    m_hotkeyJob = QtConcurrent::run([keys = m_settings.hotkeys] {
+        return GlobalHotkeys::desktopSupported() ? GlobalHotkeys::applyToDesktop(keys) : QString();
+    });
 }
 
 void MainWindow::releaseHotkeys()
@@ -520,10 +523,19 @@ void MainWindow::showSettings()
     m_settings.save();
     applySettings(m_settings);
     if (keysChanged) {
-        m_hotkeyJob.waitForFinished();
-        const QString err = GlobalHotkeys::applyToDesktop(m_settings.hotkeys);
-        if (!err.isEmpty())
-            QMessageBox::warning(this, windowTitle(), QStringLiteral("Не все клавиши удалось назначить:\n") + err);
+        // Some 20 gsettings calls: in the background, after the one before.
+        auto *watcher = new QFutureWatcher<QString>(this);
+        connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher] {
+            watcher->deleteLater();
+            const QString err = watcher->result();
+            if (!err.isEmpty())
+                QMessageBox::warning(this, windowTitle(), QStringLiteral("Не все клавиши удалось назначить:\n") + err);
+        });
+        m_hotkeyJob = QtConcurrent::run([previous = m_hotkeyJob, keys = m_settings.hotkeys]() mutable {
+            previous.waitForFinished();
+            return GlobalHotkeys::applyToDesktop(keys);
+        });
+        watcher->setFuture(m_hotkeyJob);
     }
 }
 
@@ -1200,7 +1212,8 @@ void MainWindow::openPlaylists()
         QString error;
         if (!PlaylistIO::load(file, data, &error)) {
             errors << QStringLiteral("%1: %2").arg(QFileInfo(file).fileName(), error);
-            continue;
+            if (data.tracks.isEmpty())
+                continue;   // a damaged file: open what could be read
         }
         // Reuse the current tab if it is empty, as AIMP does with a fresh playlist.
         PlaylistPage *page = currentPage();
@@ -1327,6 +1340,8 @@ void MainWindow::importFromAimp()
         if (!page && i == 0 && currentPage() && !currentPage()->isReadOnly()
             && currentPage()->model()->rowCount() == 0)
             page = currentPage();   // a fresh empty tab
+        if (page && data.tracks.isEmpty() && page->model()->rowCount() > 0)
+            continue;   // nothing read from it: never empty a full tab
         if (!page)
             page = addPage(data.name);
         page->model()->clear();
@@ -1511,35 +1526,19 @@ void MainWindow::saveSession(SaveScope scope)
 {
     if (m_autosave)
         m_autosave->stop();
-    const QString dir = playlistDir();
-    QDir().mkpath(dir);
-
     // Tab indexes count every tab; files are written for ordinary playlists only
-    // (Local files are rebuilt from the folders, with their own cache). Each
-    // file is replaced atomically; old files go only after all are written.
+    // (Local files are rebuilt from the folders, with their own cache).
     int playingTab = -1;
-    int files = 0;
-    QSet<QString> written;
-    QStringList failed;
+    QList<PlaylistData> playlists;
     for (int i = 0; i < m_tabs->count(); ++i) {
         auto *page = qobject_cast<PlaylistPage *>(m_tabs->widget(i));
         if (page == m_playingPage)
             playingTab = i;
-        if (page == m_localPage)
-            continue;
-        const QString name = QStringLiteral("%1.xspf").arg(files++, 3, 10, QLatin1Char('0'));
-        QString error;
-        if (PlaylistIO::save(dir + QLatin1Char('/') + name, {page->model()->name(), page->model()->tracks()}, &error))
-            written.insert(name);
-        else
-            failed << QStringLiteral("%1: %2").arg(page->model()->name(), error);
+        if (page != m_localPage)
+            playlists.append({page->model()->name(), page->model()->tracks()});
     }
-    if (failed.isEmpty()) {
-        for (const QString &old : QDir(dir).entryList({QStringLiteral("*.xspf")}, QDir::Files)) {
-            if (!written.contains(old))
-                QFile::remove(dir + QLatin1Char('/') + old);
-        }
-    } else {
+    const int files = int(playlists.size());
+    if (const QStringList failed = SessionFiles::save(playlistDir(), playlists); !failed.isEmpty()) {
         statusBar()->showMessage(QStringLiteral("Не удалось сохранить плейлисты: ") + failed.join(QStringLiteral("; ")), 10000);
     }
     if (scope == SaveScope::Everything)
@@ -1580,14 +1579,18 @@ void MainWindow::restoreSession()
                                                                                        : Qt::AscendingOrder;
 
     createLocalPage();
-    const int count = s.value(QStringLiteral("session/count"), 0).toInt();
-    for (int i = 0; i < count; ++i) {
-        PlaylistData data;
-        const QString file = QStringLiteral("%1/%2.xspf").arg(playlistDir()).arg(i, 3, 10, QLatin1Char('0'));
-        if (!PlaylistIO::load(file, data))
-            continue;
+    const SessionFiles::Loaded session = SessionFiles::load(playlistDir());
+    for (int i = 0; i < session.playlists.size(); ++i) {
+        const PlaylistData &data = session.playlists[i];
         PlaylistPage *page = addPage(data.name.isEmpty() ? QStringLiteral("Плейлист %1").arg(i + 1) : data.name);
         page->model()->insertTracks(-1, data.tracks);
+    }
+    if (const QStringList unreadable = session.keptAside; !unreadable.isEmpty()) {
+        QTimer::singleShot(0, this, [this, unreadable] {
+            QMessageBox::warning(this, windowTitle(),
+                                 QStringLiteral("Не удалось прочитать плейлисты прошлого сеанса полностью. Копии файлов сохранены:\n\n")
+                                     + unreadable.join(QLatin1Char('\n')));
+        });
     }
     if (m_tabs->count() == 1)
         addPage(QStringLiteral("Плейлист 1"));
@@ -1639,6 +1642,7 @@ void MainWindow::closeEvent(QCloseEvent *e)
     }
     saveSession();
     m_finalSaveDone = true;
+    m_mpris->unregisterFromBus();   // saved: a new start may take over now
     m_engine->unload();
     releaseHotkeys();
     if (!m_artFile.isEmpty())

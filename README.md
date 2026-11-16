@@ -217,6 +217,7 @@ src/
   core/Track              запись плейлиста (для CUE: файл + диапазон startMs..endMs)
   core/MetadataReader     теги и техинфо через libavformat, обложки
   core/PlaylistIO         M3U/M3U8/PLS/XSPF/CUE/AIMPPL4
+  core/SessionFiles       плейлисты сеанса на диске (атомарная запись, повреждённые откладываются)
   core/PathResolver       пути Windows/Wine, относительные, «папка переехала»
   core/Relocator          поиск перемещённых файлов по имени (с учётом папок при одинаковых именах)
   core/LocalFiles         «Локальные файлы»: папки фонотеки, кеш, слежение за изменениями

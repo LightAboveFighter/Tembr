@@ -1,3 +1,4 @@
+#include "core/MediaCollector.h"
 #include "core/PathResolver.h"
 #include "core/PlaylistIO.h"
 #include "core/Relocator.h"
@@ -8,6 +9,7 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QUrl>
 
 class TestPlaylistIO : public QObject
 {
@@ -370,6 +372,114 @@ private slots:
         QCOMPARE(data.name, QStringLiteral("Кино"));
         QCOMPARE(data.tracks.size(), 1);
         QCOMPARE(data.tracks[0].path, audio.fileName());
+    }
+
+    // A tag with half of a UTF-16 surrogate pair (AIMP files carry such junk)
+    // used to make the whole UTF-16 playlist read as empty.
+    void loneSurrogateKeepsThePlaylist()
+    {
+        QString text = QStringLiteral("#EXTM3U\r\n#EXTINF:10,Bad @\r\n/m/a.mp3\r\n/m/b.mp3\r\n");
+        text[text.indexOf(QLatin1Char('@'))] = QChar(0xD800);
+        QByteArray bytes("\xFF\xFE", 2);
+        bytes.append(reinterpret_cast<const char *>(text.utf16()), text.size() * 2);
+        QTemporaryDir dir;
+        QFile f(dir.filePath(QStringLiteral("p.m3u")));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(bytes);
+        f.close();
+
+        PlaylistData data;
+        QVERIFY(PlaylistIO::load(f.fileName(), data));
+        QCOMPARE(data.tracks.size(), 2);
+        QCOMPARE(data.tracks[0].title, QStringLiteral("Bad ") + QChar(QChar::ReplacementCharacter));
+    }
+
+    void loneSurrogateInXspf()
+    {
+        QTemporaryDir dir;
+        Track a = Track::fromPath(QStringLiteral("/m/a.mp3"));
+        a.title = QStringLiteral("x") + QChar(0xDC00);
+        Track b = Track::fromPath(QStringLiteral("/m/b.mp3"));
+        const QString file = dir.filePath(QStringLiteral("s.xspf"));
+        QVERIFY(PlaylistIO::save(file, {QStringLiteral("n") + QChar(0xD800), {a, b}}));
+        PlaylistData back;
+        QString error;
+        QVERIFY2(PlaylistIO::load(file, back, &error), qPrintable(error));
+        QCOMPARE(back.tracks.size(), 2);
+    }
+
+    void damagedXspfIsReported()
+    {
+        QTemporaryDir dir;
+        const QString file = dir.filePath(QStringLiteral("s.xspf"));
+        QVERIFY(PlaylistIO::save(file, {QStringLiteral("S"), {Track::fromPath(QStringLiteral("/m/a.mp3")),
+                                                              Track::fromPath(QStringLiteral("/m/b.mp3"))}}));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QByteArray xml = f.readAll();
+        f.close();
+        xml.insert(xml.indexOf("/m/b.mp3"), "<broken");   // damage the second track
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(xml);
+        f.close();
+
+        PlaylistData back;
+        QString error;
+        QVERIFY(!PlaylistIO::load(file, back, &error));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(back.tracks.size(), 1);   // what came before the damage
+    }
+
+    // Tags are untrusted: a line break in one must not add an entry.
+    void lineBreaksInTagsStayInTheirLine()
+    {
+        QTemporaryDir dir;
+        Track t = Track::fromPath(QStringLiteral("/m/a.mp3"));
+        t.title = QStringLiteral("line1\n/etc/passwd\r\nhttp://evil.example/x");
+        Track odd = Track::fromPath(QStringLiteral("/m/new\nline.mp3"));
+        for (const char *ext : {"m3u8", "pls"}) {
+            const QString file = dir.filePath(QStringLiteral("p.") + QLatin1String(ext));
+            QVERIFY(PlaylistIO::save(file, {QStringLiteral("P\nQ"), {t, odd}}));
+            PlaylistData back;
+            QVERIFY(PlaylistIO::load(file, back));
+            QCOMPARE(back.tracks.size(), 1);
+            QCOMPARE(back.tracks[0].path, t.path);
+        }
+    }
+
+    // A Windows path that was not found stays one in the session file.
+    void unresolvedWindowsPathSurvivesXspf()
+    {
+        QTemporaryDir dir;
+        Track t;
+        t.path = QStringLiteral("D:/Music/a.mp3");
+        t.uid = Track::newUid();
+        const QString file = dir.filePath(QStringLiteral("s.xspf"));
+        QVERIFY(PlaylistIO::save(file, {QStringLiteral("S"), {t}}));
+        PlaylistData back;
+        QVERIFY(PlaylistIO::load(file, back));
+        QCOMPARE(back.tracks.size(), 1);
+        QVERIFY2(!back.tracks[0].path.startsWith(QLatin1String("/D:")), qPrintable(back.tracks[0].path));
+    }
+
+    // "Open with Tembr" (Exec=tembr %U) passes file:// URLs.
+    void collectTakesFileUrls()
+    {
+        QTemporaryDir dir;
+        QDir().mkpath(dir.filePath(QStringLiteral("Альбом 1")));
+        const QString file = dir.filePath(QStringLiteral("Альбом 1/песня #1.mp3"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.close();
+        for (const QString &arg : {QUrl::fromLocalFile(file).toString(QUrl::FullyEncoded),
+                                   QUrl::fromLocalFile(dir.filePath(QStringLiteral("Альбом 1"))).toString()}) {
+            const TrackList t = MediaCollector::collect({arg});
+            QCOMPARE(t.size(), 1);
+            QCOMPARE(t[0].path, file);
+            QVERIFY(!t[0].isUrl());
+        }
+        QCOMPARE(MediaCollector::collect({QStringLiteral("https://radio.example/live")}).value(0).path,
+                 QStringLiteral("https://radio.example/live"));
     }
 };
 

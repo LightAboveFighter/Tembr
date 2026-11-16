@@ -279,9 +279,7 @@ QString installDesktopEntry()
                          QStringLiteral("audio/x-wav"), QStringLiteral("audio/x-ape"), QStringLiteral("audio/x-wavpack"),
                          QStringLiteral("audio/x-ms-wma"), QStringLiteral("audio/x-mpegurl"), QStringLiteral("audio/x-scpls"),
                          QStringLiteral("application/xspf+xml"), QStringLiteral("application/x-cue")};
-    QString exe = QCoreApplication::applicationFilePath();
-    if (exe.contains(QLatin1Char(' ')))
-        exe = QLatin1Char('"') + exe + QLatin1Char('"');
+    const QString exe = GlobalHotkeys::desktopExecQuote(QCoreApplication::applicationFilePath());
     const QString entry = QStringLiteral(
                               "[Desktop Entry]\nType=Application\nName=Tembr\nGenericName=Аудиоплеер\n"
                               "Comment=Лёгкий аудиоплеер\nExec=%1 %U\nIcon=tembr\nTerminal=false\n"
