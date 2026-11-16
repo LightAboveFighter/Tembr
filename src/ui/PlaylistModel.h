@@ -58,6 +58,11 @@ public:
 
     // row < 0 appends. Unscanned local files get their tags read in the background.
     void insertTracks(int row, const TrackList &tracks);
+    // Copies of rows for another playlist (sent there, dragged there): with
+    // their tags, so nothing is read again, and without their uids, so the
+    // playlist they go to gives each its own (the same track sent twice is
+    // two entries). Not the playing / missing marks of this list.
+    TrackList copiesOf(const QList<int> &rows) const;
     void removeRowList(QList<int> rows);
     void removeMissing();
     void clear();

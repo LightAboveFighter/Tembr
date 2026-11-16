@@ -109,6 +109,9 @@ private:
     void updateStats();
     void applySearch();
     void showContextMenu(const QPoint &globalPos);
+    // Copies the selected tracks of `from` to the end of `to` (nullptr: a new
+    // playlist, named by the user).
+    void sendSelected(PlaylistPage *from, PlaylistPage *to);
     void showHeaderMenu(const QPoint &globalPos);
 
     void addFiles();

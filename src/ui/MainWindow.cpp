@@ -951,6 +951,17 @@ void MainWindow::showContextMenu(const QPoint &globalPos)
                 QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
             });
         }
+        // Into another playlist (from Local files above all): copies, the
+        // tracks stay here too.
+        QMenu *send = menu.addMenu(QStringLiteral("Отправить в плейлист"));
+        for (int i = 0; i < m_tabs->count(); ++i) {
+            auto *to = qobject_cast<PlaylistPage *>(m_tabs->widget(i));
+            if (to && to != page && !to->isReadOnly())
+                send->addAction(to->model()->name(), this, [this, page, to] { sendSelected(page, to); });
+        }
+        if (!send->isEmpty())
+            send->addSeparator();
+        send->addAction(QStringLiteral("Новый плейлист…"), this, [this, page] { sendSelected(page, nullptr); });
         menu.addSeparator();
         if (!page->isReadOnly())
             menu.addAction(QStringLiteral("Удалить из плейлиста"), page, &PlaylistPage::removeSelected);
@@ -984,6 +995,26 @@ void MainWindow::showContextMenu(const QPoint &globalPos)
     if (page->model()->missingCount() > 0)
         menu.addAction(QStringLiteral("Найти перемещённые файлы…"), this, &MainWindow::findMovedFiles);
     menu.exec(globalPos);
+}
+
+void MainWindow::sendSelected(PlaylistPage *from, PlaylistPage *to)
+{
+    const TrackList tracks = from->model()->copiesOf(from->selectedSourceRows());
+    if (tracks.isEmpty())
+        return;
+    if (!to) {
+        QInputDialog dlg(this);
+        dlg.setWindowTitle(QStringLiteral("Новый плейлист"));
+        dlg.setLabelText(QStringLiteral("Название:"));
+        dlg.setTextValue(QStringLiteral("Плейлист %1").arg(m_tabs->count() + 1));
+        dlg.setOkButtonText(QStringLiteral("Создать"));
+        dlg.setCancelButtonText(QStringLiteral("Отмена"));
+        if (dlg.exec() != QDialog::Accepted || dlg.textValue().trimmed().isEmpty())
+            return;
+        to = addPage(dlg.textValue().trimmed());
+    }
+    to->model()->insertTracks(-1, tracks);   // saved by the autosave, as any change
+    statusBar()->showMessage(QStringLiteral("Добавлено треков в «%1»: %2").arg(to->model()->name()).arg(tracks.size()), 5000);
 }
 
 void MainWindow::showHeaderMenu(const QPoint &globalPos)

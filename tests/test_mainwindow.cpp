@@ -16,6 +16,9 @@
 #include <QDirIterator>
 #include <QHeaderView>
 #include <QLineEdit>
+#include <QMenu>
+#include <QStatusBar>
+#include <QTimer>
 #include <QSemaphore>
 #include <QSettings>
 #include <QSignalSpy>
@@ -402,6 +405,67 @@ private slots:
         QCOMPARE(saved.value(QStringLiteral("session/playingRow")).toInt(), 1);
         QCOMPARE(saved.value(QStringLiteral("volume")).toInt(), 95);
         QCOMPARE(SessionFiles::load(playlistDir()).playlists.size(), 1);
+    }
+
+    // Right click on tracks of Local files -> "Send to playlist" -> a
+    // playlist: copied to its end; neither Local files nor the playlist the
+    // tracks are in are offered.
+    void sendToPlaylistFromTheMenu()
+    {
+        SessionSnapshot snap;
+        snap.localFiles = playlist({}, {audio(QStringLiteral("music/l0.wav")), audio(QStringLiteral("music/l1.wav")),
+                                        audio(QStringLiteral("music/l2.wav"))}).tracks;
+        snap.playlists = {playlist(QStringLiteral("A"), {audio(QStringLiteral("a0.wav"))}),
+                          playlist(QStringLiteral("B"), {})};
+        QSettings s;
+        s.setValue(QStringLiteral("session/version"), 2);
+        s.setValue(QStringLiteral("session/localTab"), 0);
+        s.setValue(QStringLiteral("session/current"), 0);
+        s.sync();
+
+        MainWindow w(options([snap] { return snap; }));
+        QSignalSpy loaded(&w, &MainWindow::sessionLoaded);
+        QSignalSpy scanned(w.findChild<LocalFiles *>(), &LocalFiles::scanned);
+        w.show();
+        QVERIFY(loaded.wait(10000));
+        QVERIFY(scanned.wait(10000));   // the folder scan replaces the list (and its selection)
+        PlaylistPage *local = pageAt(w, 0);
+        PlaylistModel *a = pageAt(w, 1)->model();
+        QCOMPARE(tabsOf(w)->currentWidget(), local);
+        auto *sel = local->view()->selectionModel();
+        sel->select(local->proxy()->index(0, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        sel->select(local->proxy()->index(2, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        local->view()->setCurrentIndex(local->proxy()->index(2, 0));
+        sel->select(local->proxy()->index(0, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+
+        // The menu runs its own loop: pick from it once it is up.
+        QStringList offered;
+        QTimer::singleShot(200, this, [&] {
+            auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+            QVERIFY(menu);
+            QMenu *send = nullptr;
+            for (QAction *act : menu->actions()) {
+                if (act->text() == QStringLiteral("Отправить в плейлист"))
+                    send = act->menu();
+            }
+            QVERIFY(send);
+            for (QAction *act : send->actions()) {
+                if (!act->isSeparator())
+                    offered << act->text();
+            }
+            for (QAction *act : send->actions()) {
+                if (act->text() == QStringLiteral("A"))
+                    act->trigger();
+            }
+            menu->close();
+        });
+        emit local->contextMenuRequested(local->view()->viewport()->mapToGlobal(QPoint(10, 10)));
+        QCOMPARE(offered, (QStringList{QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("Новый плейлист…")}));
+        QCOMPARE(a->rowCount(), 3);
+        QCOMPARE(a->track(1).path, local->model()->track(0).path);
+        QCOMPARE(a->track(2).path, local->model()->track(2).path);
+        QCOMPARE(local->model()->rowCount(), 3);
+        QVERIFY(w.statusBar()->currentMessage().contains(QStringLiteral("«A»: 2")));
     }
 
     // Closed before the playlists were read: nothing is written. A save then
