@@ -3,6 +3,7 @@
 #include "ui/PlaylistPage.h"
 
 #include <QApplication>
+#include <QElapsedTimer>
 #include <QHeaderView>
 #include <QMouseEvent>
 #include <QSettings>
@@ -141,6 +142,160 @@ private slots:
         QCOMPARE(page.proxy()->mapToSource(page.proxy()->index(0, 0)).row(), 1);
         page.model()->relocate({{1, QStringLiteral("/m/b.mp3")}});
         QTRY_COMPARE_WITH_TIMEOUT(page.proxy()->rowCount(), 0, 2000);
+    }
+
+    // A rescan of Local files replaces the whole list while the user may be
+    // selecting tracks: the selection and the current track follow the
+    // tracks (by uid), whatever rows they end up on.
+    void replaceKeepsSelectionAndCurrent()
+    {
+        PlaylistPage page(QStringLiteral("Local"));
+        page.resize(600, 300);
+        page.show();
+        const TrackList list = named({"a", "b", "c", "d", "e", "f"});
+        page.model()->setTracks(list);
+        select(page, {1, 2, 4});   // b, c, e
+        setCurrent(page, 4);       // e
+
+        // b (selected) is gone, e (selected, current) moves up, x is new.
+        const Track x = named({"x"}).first();
+        page.replaceTracks({list[0], list[4], x, list[2], list[3], list[5]});
+        QCOMPARE(selectedUids(page), (QSet<quint64>{list[2].uid, list[4].uid}));
+        QCOMPARE(currentUid(page), list[4].uid);
+        QVERIFY(page.view()->selectionModel()->isRowSelected(1, {}));   // whole rows
+        QVERIFY(page.view()->selectionModel()->isRowSelected(3, {}));
+
+        // The current track gone: no current, the rest of the selection stays.
+        page.replaceTracks({list[2], list[3], list[5]});
+        QCOMPARE(selectedUids(page), (QSet<quint64>{list[2].uid}));
+        QVERIFY(!page.view()->currentIndex().isValid());
+    }
+
+    void replaceKeepsSelectionUnderSearch()
+    {
+        PlaylistPage page(QStringLiteral("Local"));
+        page.resize(600, 300);
+        page.show();
+        // Shown under the search: a, c, d, e (b is filtered out).
+        const TrackList list = named({"a keep", "b other", "c keep", "d keep", "e keep"});
+        page.model()->setTracks(list);
+        page.setQuery(QStringLiteral("keep"), TrackQuery::Field::Title);
+        QCOMPARE(page.proxy()->rowCount(), 4);
+        select(page, {0, 1, 3});   // proxy rows: a, c, e
+        setCurrent(page, 2);       // d
+
+        // a (selected) is gone, e (selected) moves to the top, x is new and
+        // shown, y is new and hidden, c (selected) moves down.
+        const TrackList fresh = named({"x keep", "y other"});
+        page.replaceTracks({list[1], list[4], fresh[0], fresh[1], list[3], list[2]});
+        QCOMPARE(page.proxy()->rowCount(), 4);   // e, x, d, c
+        QCOMPARE(selectedUids(page), (QSet<quint64>{list[2].uid, list[4].uid}));
+        QCOMPARE(currentUid(page), list[3].uid);
+        QItemSelectionModel *sel = page.view()->selectionModel();
+        QVERIFY(sel->isRowSelected(0, {}));    // e
+        QVERIFY(!sel->isRowSelected(1, {}));   // x
+        QVERIFY(!sel->isRowSelected(2, {}));   // d: current, not selected
+        QVERIFY(sel->isRowSelected(3, {}));    // c
+    }
+
+    // Local files may hold 100k tracks, all of them selected (Ctrl+A).
+    void replaceKeepsBigSelectionCheaply()
+    {
+        constexpr int kCount = 100000;
+        TrackList list;
+        list.reserve(kCount);
+        for (int i = 0; i < kCount; ++i) {
+            Track t = Track::fromPath(QStringLiteral("/m/%1.mp3").arg(i));
+            t.title = QStringLiteral("Title %1").arg(i);
+            t.scanned = true;
+            t.uid = Track::newUid();
+            list << t;
+        }
+        PlaylistPage page(QStringLiteral("Local"));
+        page.resize(600, 300);
+        page.show();
+        page.model()->setTracks(list);
+        QItemSelectionModel *sel = page.view()->selectionModel();
+        page.view()->selectAll();
+        setCurrent(page, 500);
+
+        // The first track gone, a new one at the end: every row moves.
+        TrackList next = list.mid(1);
+        next << named({"new"}).first();
+        QElapsedTimer bare;
+        bare.start();
+        page.model()->setTracks(list);   // the reset alone, for comparison
+        const qint64 resetMs = bare.elapsed();
+        page.view()->selectAll();
+        setCurrent(page, 500);
+
+        QElapsedTimer timer;
+        timer.start();
+        page.replaceTracks(next);
+        const qint64 allMs = timer.elapsed();
+        QCOMPARE(sel->selection().size(), 1);   // one range, not 100k
+        QCOMPARE(sel->selection().first().top(), 0);
+        QCOMPARE(sel->selection().first().bottom(), kCount - 2);
+        QCOMPARE(currentUid(page), list[500].uid);
+
+        // Every other row selected: 50k ranges.
+        page.model()->setTracks(list);
+        QItemSelection every;
+        for (int row = 0; row < kCount; row += 2)
+            every.append(QItemSelectionRange(page.proxy()->index(row, 0),
+                                             page.proxy()->index(row, page.proxy()->columnCount() - 1)));
+        sel->select(every, QItemSelectionModel::Select);
+        timer.restart();
+        page.replaceTracks(next);
+        const qint64 scatteredMs = timer.elapsed();
+        QCOMPARE(sel->selection().size(), kCount / 2 - 1);   // the first one is gone
+
+        qInfo("100k tracks: reset alone %lld ms; replaceTracks with all selected %lld ms, "
+              "with every other row selected %lld ms",
+              resetMs, allMs, scatteredMs);
+        QVERIFY2(allMs < 2000, "keeping a full selection must stay linear");
+        QVERIFY2(scatteredMs < 5000, "keeping a scattered selection must stay linear");
+    }
+
+private:
+    static TrackList named(std::initializer_list<const char *> titles)
+    {
+        TrackList out;
+        for (const char *title : titles) {
+            Track t = Track::fromPath(QStringLiteral("/m/%1.mp3").arg(QLatin1String(title)));
+            t.title = QLatin1String(title);
+            t.scanned = true;
+            t.uid = Track::newUid();
+            out << t;
+        }
+        return out;
+    }
+
+    static void select(PlaylistPage &page, std::initializer_list<int> proxyRows)
+    {
+        for (int row : proxyRows)
+            page.view()->selectionModel()->select(page.proxy()->index(row, 0),
+                                                  QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    }
+
+    static void setCurrent(PlaylistPage &page, int proxyRow)
+    {
+        page.view()->selectionModel()->setCurrentIndex(page.proxy()->index(proxyRow, 0),
+                                                       QItemSelectionModel::NoUpdate);
+    }
+
+    static QSet<quint64> selectedUids(PlaylistPage &page)
+    {
+        QSet<quint64> out;
+        for (int row : page.selectedSourceRows())
+            out.insert(page.model()->track(row).uid);
+        return out;
+    }
+
+    static quint64 currentUid(PlaylistPage &page)
+    {
+        const QModelIndex idx = page.proxy()->mapToSource(page.view()->currentIndex());
+        return idx.isValid() ? page.model()->track(idx.row()).uid : 0;
     }
 };
 

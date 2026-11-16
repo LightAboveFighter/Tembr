@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Track.h"
 #include "core/TrackQuery.h"
 
 #include <QHash>
@@ -45,6 +46,10 @@ public:
 
     // Expands folders/playlists in the background, then inserts at sourceRow.
     void addPaths(const QStringList &paths, int sourceRow = -1, bool playFirst = false);
+    // Replaces the whole list (a model reset, as for a Local files rescan)
+    // keeping what the user sees and has selected: the top visible track,
+    // the selected tracks and the current one, found again by uid.
+    void replaceTracks(const TrackList &tracks);
 
     QList<int> selectedSourceRows() const;
     int focusedSourceRow() const;   // current or first selected row, -1 if none
