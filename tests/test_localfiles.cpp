@@ -239,6 +239,28 @@ private slots:
         QTRY_VERIFY(!scanning.isEmpty() && !scanning.last().at(0).toBool());
     }
 
+    // A scan comes back in the order asked for, sorted on its own thread,
+    // and says which sort that was.
+    void scanComesBackSorted()
+    {
+        QTemporaryDir music;
+        for (const char *n : {"b/2.mp3", "a/1.mp3", "c/3.mp3"})
+            writeFile(music.filePath(QString::fromLatin1(n)), "x");
+        LocalFiles lf;
+        LocalFilesSettings s;
+        s.folders = {music.path()};
+        s.watch = false;
+        lf.setSettings(s);
+        QSignalSpy scanned(&lf, &LocalFiles::scanned);
+        lf.setSort(true, TrackSort::Key::Path, Qt::DescendingOrder);
+        lf.rescan({});
+        QVERIFY(scanned.wait(5000));
+        const TrackList t = scanned.last().at(0).value<TrackList>();
+        QCOMPARE(relPaths(t, music.path()),
+                 (QStringList{QStringLiteral("c/3.mp3"), QStringLiteral("b/2.mp3"), QStringLiteral("a/1.mp3")}));
+        QCOMPARE(scanned.last().at(1).toInt(), lf.sortGeneration());
+    }
+
     // Dates: added = first seen (kept), modified = mtime; retagging that keeps
     // the size is still noticed through the mtime.
     void datesAddedAndModified()

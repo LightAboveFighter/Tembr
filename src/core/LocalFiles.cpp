@@ -247,7 +247,7 @@ LocalFiles::LocalFiles(QObject *parent)
     connect(&m_watcher, &QFutureWatcher<QPair<TrackList, QStringList>>::finished, this, [this] {
         const auto result = m_watcher.result();
         watchDirs(result.second);
-        emit scanned(result.first);
+        emit scanned(result.first, m_scanGeneration);
         if (m_rescanPending) {
             // Asked for while this scan ran: rescan from what is shown now,
             // with this result applied (an older list would give the files
@@ -293,11 +293,22 @@ void LocalFiles::rescan(const TrackList &known)
     }
     emit scanningChanged(true);
     const LocalFilesSettings s = m_settings;
-    m_watcher.setFuture(QtConcurrent::run([s, known] {
+    m_scanGeneration = m_sortGeneration;
+    m_watcher.setFuture(QtConcurrent::run([s, known, sorted = m_sorted, key = m_sortKey, order = m_sortOrder] {
         QStringList dirs;
         TrackList tracks = LocalLibrary::scan(s, known, &dirs);
+        if (sorted)
+            TrackSort::sort(tracks, key, order);   // here, not on the GUI thread
         return qMakePair(tracks, dirs);
     }));
+}
+
+void LocalFiles::setSort(bool sorted, TrackSort::Key key, Qt::SortOrder order)
+{
+    m_sorted = sorted;
+    m_sortKey = key;
+    m_sortOrder = order;
+    ++m_sortGeneration;
 }
 
 void LocalFiles::watchDirs(const QStringList &dirs)

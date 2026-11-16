@@ -59,7 +59,8 @@ private:
     PlaylistPage *editablePage();   // current page unless read-only, else another (created if needed)
     bool refuseReadOnly(PlaylistPage *page);
     void createLocalPage();
-    void applyLocalScan(const TrackList &tracks);
+    void applyLocalScan(const TrackList &tracks, int sortGeneration);
+    void syncLocalSort();   // m_localSortColumn/Order to LocalFiles
     void showLocalFilesSettings();
     // column < 0: by folder, as found on disk (AIMP's grouping by %FileDir).
     void setLocalSort(int column, Qt::SortOrder order);
