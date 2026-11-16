@@ -495,9 +495,11 @@ void MainWindow::setupTray(bool enabled)
 
 void MainWindow::registerHotkeys()
 {
-    // gsettings takes a while; don't hold up the window.
-    if (GlobalHotkeys::desktopSupported())
-        m_hotkeyJob = QtConcurrent::run(&GlobalHotkeys::applyToDesktop, m_settings.hotkeys);
+    // gsettings takes a while (also to find out whether it can be used):
+    // don't hold up the window.
+    m_hotkeyJob = QtConcurrent::run([keys = m_settings.hotkeys] {
+        return GlobalHotkeys::desktopSupported() ? GlobalHotkeys::applyToDesktop(keys) : QString();
+    });
 }
 
 void MainWindow::releaseHotkeys()
@@ -521,10 +523,19 @@ void MainWindow::showSettings()
     m_settings.save();
     applySettings(m_settings);
     if (keysChanged) {
-        m_hotkeyJob.waitForFinished();
-        const QString err = GlobalHotkeys::applyToDesktop(m_settings.hotkeys);
-        if (!err.isEmpty())
-            QMessageBox::warning(this, windowTitle(), QStringLiteral("Не все клавиши удалось назначить:\n") + err);
+        // Some 20 gsettings calls: in the background, after the one before.
+        auto *watcher = new QFutureWatcher<QString>(this);
+        connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher] {
+            watcher->deleteLater();
+            const QString err = watcher->result();
+            if (!err.isEmpty())
+                QMessageBox::warning(this, windowTitle(), QStringLiteral("Не все клавиши удалось назначить:\n") + err);
+        });
+        m_hotkeyJob = QtConcurrent::run([previous = m_hotkeyJob, keys = m_settings.hotkeys]() mutable {
+            previous.waitForFinished();
+            return GlobalHotkeys::applyToDesktop(keys);
+        });
+        watcher->setFuture(m_hotkeyJob);
     }
 }
 
