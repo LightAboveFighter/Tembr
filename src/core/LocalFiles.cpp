@@ -10,6 +10,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QtConcurrent>
@@ -141,14 +142,40 @@ TrackList LocalLibrary::scan(const LocalFilesSettings &settings, const TrackList
             folders << f;
     }
     TrackList found = MediaCollector::collect(folders, cleanFolders(settings.excluded), dirs);
+
+    // Files that vanished from where they were: one appearing elsewhere with
+    // the same size and mtime was moved or renamed. It keeps its date added
+    // (where the date comes from the inode change time, a move would reset it)
+    // and its tags.
+    QSet<QString> present;
+    for (const Track &t : found)
+        present.insert(trackKey(t));
+    QHash<QPair<qint64, qint64>, int> gone;   // (size, mtime) -> index in known, -1 if not unique
+    for (int i = 0; i < known.size(); ++i) {
+        const Track &k = known[i];
+        if (k.isCueTrack() || !k.scanned || k.fileSize <= 0 || k.modifiedMs <= 0 || present.contains(trackKey(k)))
+            continue;
+        const auto key = qMakePair(k.fileSize, k.modifiedMs);
+        gone.insert(key, gone.contains(key) ? -1 : i);
+    }
+
     TrackList out;
     out.reserve(found.size());
     for (Track &t : found) {
         const QFileInfo fi(t.path);
         const qint64 modified = FileTimes::modifiedMs(fi);
         const auto it = byKey.constFind(trackKey(t));
-        if (it == byKey.constEnd()) {   // new
-            t.addedMs = FileTimes::addedMs(fi);
+        if (it == byKey.constEnd()) {
+            const int moved = t.isCueTrack() ? -1 : gone.value(qMakePair(fi.size(), modified), -1);
+            if (moved >= 0) {
+                gone.insert(qMakePair(fi.size(), modified), -1);   // one new place per file
+                Track m = known[moved];
+                m.path = t.path;
+                m.missing = false;   // marked when its old path failed to play: here it is
+                out.append(m);
+                continue;
+            }
+            t.addedMs = FileTimes::addedMs(fi);   // new
             t.modifiedMs = modified;
             out.append(t);
             continue;
@@ -180,7 +207,8 @@ bool LocalLibrary::sameList(const TrackList &shown, const TrackList &scanned)
     for (int i = 0; i < shown.size(); ++i) {
         const Track &n = scanned.at(i);
         const Track &o = shown.at(i);
-        if (n.uid != o.uid || n.addedMs != o.addedMs || n.modifiedMs != o.modifiedMs || (!n.scanned && n.fileSize > 0))
+        if (n.uid != o.uid || n.path != o.path || n.addedMs != o.addedMs || n.modifiedMs != o.modifiedMs
+            || (!n.scanned && n.fileSize > 0))
             return false;
     }
     return true;
