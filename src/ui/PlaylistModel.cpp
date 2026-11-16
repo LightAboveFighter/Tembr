@@ -26,12 +26,12 @@ PlaylistModel::PlaylistModel(QObject *parent)
 {
 }
 
+// Tag reads still running work on copies of the tracks and are not waited
+// for (one on a stalled network drive can take long); the rest are cancelled.
 PlaylistModel::~PlaylistModel()
 {
-    for (auto *w : std::as_const(m_watchers)) {
+    for (auto *w : std::as_const(m_watchers))
         w->cancel();
-        w->waitForFinished();
-    }
 }
 
 int PlaylistModel::rowCount(const QModelIndex &parent) const

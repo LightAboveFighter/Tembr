@@ -1660,6 +1660,7 @@ void MainWindow::closeEvent(QCloseEvent *e)
     }
     saveSession();
     m_finalSaveDone = true;
+    m_mpris->unregisterFromBus();   // saved: a new start may take over now
     m_engine->unload();
     releaseHotkeys();
     if (!m_artFile.isEmpty())

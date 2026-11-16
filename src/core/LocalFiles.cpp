@@ -260,10 +260,9 @@ LocalFiles::LocalFiles(QObject *parent)
     });
 }
 
-LocalFiles::~LocalFiles()
-{
-    m_watcher.waitForFinished();
-}
+// A scan still running works on its own copies and is not waited for: it can
+// take minutes on a big or slow drive. See main() for the end of the process.
+LocalFiles::~LocalFiles() = default;
 
 void LocalFiles::setSettings(const LocalFilesSettings &s)
 {
